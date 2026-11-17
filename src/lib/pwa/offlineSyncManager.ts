@@ -1,4 +1,61 @@
-import { getQueuedOutboxMutations, openIndexedDb, QueuedOfflineMutation } from './db';
+import {
+  deletePendingPhoto,
+  getPendingPhotos,
+  getQueuedOutboxMutations,
+  openIndexedDb,
+  QueuedOfflineMutation,
+  updatePendingPhotoStatus,
+} from './db';
+
+/**
+ * Uploads all PENDING photos from the local IndexedDB pendingPhotos store to
+ * the server attachment endpoint, updating each record's status as it goes.
+ */
+export async function uploadPendingPhotos(): Promise<{
+  uploadedCount: number;
+  failedCount: number;
+}> {
+  if (typeof window === 'undefined' || !navigator.onLine) {
+    return { uploadedCount: 0, failedCount: 0 };
+  }
+
+  const allPhotos = await getPendingPhotos();
+  const pending = allPhotos.filter((p) => p.uploadStatus === 'PENDING');
+
+  let uploadedCount = 0;
+  let failedCount = 0;
+
+  for (const photo of pending) {
+    await updatePendingPhotoStatus(photo.localId, 'UPLOADING');
+
+    let res: Response | undefined;
+    try {
+      const formData = new FormData();
+      formData.append('file', photo.blob, photo.fileName);
+
+      res = await fetch(`/api/work-orders/${photo.workOrderId}/attachments`, {
+        method: 'POST',
+        body: formData,
+        // No Content-Type header — browser sets it with the multipart boundary
+      });
+
+      if (res.ok) {
+        await deletePendingPhoto(photo.localId);
+        uploadedCount++;
+      } else {
+        const errorText = await res.text();
+        await updatePendingPhotoStatus(photo.localId, 'FAILED', errorText);
+        failedCount++;
+      }
+    } catch (err) {
+      const errorText = err instanceof Error ? err.message : String(err);
+      await updatePendingPhotoStatus(photo.localId, 'FAILED', errorText);
+      failedCount++;
+    }
+  }
+
+  return { uploadedCount, failedCount };
+}
 
 /**
  * Flushes client-side IndexedDB sync outbox queue to server batch API
@@ -12,6 +69,8 @@ export async function flushOfflineSyncQueue(): Promise<{
   if (typeof window === 'undefined' || !navigator.onLine) {
     return { success: false, syncedCount: 0, conflictCount: 0, failedCount: 0 };
   }
+
+  await uploadPendingPhotos();
 
   try {
     const queuedMutations = await getQueuedOutboxMutations();
