@@ -1,59 +1,85 @@
-// ZemiFix CMMS Technician PWA Service Worker (v1.0)
-const CACHE_NAME = 'zemifix-pwa-shell-v1';
+// ZemiFix CMMS Technician PWA Service Worker (v2.0)
+const CACHE_NAME = 'zemifix-pwa-shell-v2';
 
-const STATIC_ASSETS = [
+const APP_SHELL_ROUTES = [
   '/pwa',
+  '/pwa/jobs',
+  '/pwa/assets',
+  '/pwa/sync',
+  '/pwa/profile',
   '/manifest.json',
 ];
 
+// ── Install: precache the app shell ─────────────────────────────────────────
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS);
-    })
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL_ROUTES))
   );
-  self.skipWaiting();
+  // Do NOT call self.skipWaiting() unconditionally; wait for a SKIP_WAITING
+  // message so the caller can decide when to activate the new worker.
 });
 
+// ── Activate: clean up stale caches ─────────────────────────────────────────
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
-      );
-    })
+    caches.keys().then((keys) =>
+      Promise.all(
+        keys
+          .filter((key) => key !== CACHE_NAME)
+          .map((key) => caches.delete(key))
+      )
+    )
   );
   self.clients.claim();
 });
 
-// Network-First for API routes, Cache-First for static assets
+// ── Message: allow the app to trigger skipWaiting ────────────────────────────
+self.addEventListener('message', (e) => {
+  if (e.data === 'SKIP_WAITING') self.skipWaiting();
+});
+
+// ── Fetch ────────────────────────────────────────────────────────────────────
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // API endpoints are Network-Only (no caching of sensitive authenticated payloads)
+  // 1. API routes — network only, no caching.
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(fetch(event.request));
     return;
   }
 
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        // Return cached shell and update in background
-        fetch(event.request).then((networkResponse) => {
-          if (networkResponse.status === 200) {
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, networkResponse));
-          }
-        }).catch(() => {});
-        return cachedResponse;
-      }
+  // 2. Next.js static chunks — stale-while-revalidate.
+  if (url.pathname.startsWith('/_next/static/')) {
+    event.respondWith(staleWhileRevalidate(event.request));
+    return;
+  }
 
-      return fetch(event.request).catch(() => {
-        // Fallback to cached PWA shell if offline
-        if (event.request.mode === 'navigate') {
-          return caches.match('/pwa');
-        }
-      });
+  // 3. Everything else (app shell routes, etc.) — stale-while-revalidate
+  //    with an offline fallback for navigation requests.
+  event.respondWith(
+    staleWhileRevalidate(event.request).catch(() => {
+      if (event.request.mode === 'navigate') {
+        return caches.match('/pwa');
+      }
     })
   );
 });
+
+// ── Helper: stale-while-revalidate ──────────────────────────────────────────
+function staleWhileRevalidate(request) {
+  return caches.open(CACHE_NAME).then((cache) => {
+    return cache.match(request).then((cachedResponse) => {
+      const networkFetch = fetch(request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            cache.put(request, networkResponse.clone());
+          }
+          return networkResponse;
+        })
+        .catch(() => null);
+
+      // Return cached copy immediately; fall through to network if nothing cached.
+      return cachedResponse || networkFetch;
+    });
+  });
+}
