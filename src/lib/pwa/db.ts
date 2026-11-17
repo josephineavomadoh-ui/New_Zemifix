@@ -73,6 +73,8 @@ export interface PendingPhoto {
   capturedAt: number;
   uploadStatus: 'PENDING' | 'UPLOADING' | 'UPLOADED' | 'FAILED';
   errorMessage?: string;
+  caption?: string;
+  evidenceType?: 'BEFORE' | 'AFTER' | 'GENERAL';
 }
 
 export interface ConflictRecord {
@@ -262,6 +264,17 @@ export async function getCachedAssets(): Promise<CachedAsset[]> {
 
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result as CachedAsset[]);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+export async function getCachedAssetById(id: string): Promise<CachedAsset | null> {
+  const db = await openIndexedDb();
+  const tx = db.transaction('cachedAssets', 'readonly');
+  const request = tx.objectStore('cachedAssets').get(id);
+
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve((request.result as CachedAsset) ?? null);
     request.onerror = () => reject(request.error);
   });
 }

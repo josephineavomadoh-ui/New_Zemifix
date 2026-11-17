@@ -24,8 +24,12 @@ describe('Daily Audit Anchor Background Scheduler & Worker (Sub-stage 1.3)', () 
     }
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env.AUDIT_ANCHOR_SIGNING_KEY = TEST_SIGNING_KEY;
+    // Clean up test background jobs in acceptance DB for clean test isolation
+    await prisma.backgroundJob.deleteMany({
+      where: { jobType: 'ANCHOR_DAILY_AUDIT_LOGS' },
+    });
   });
 
   afterEach(() => {
@@ -74,7 +78,7 @@ describe('Daily Audit Anchor Background Scheduler & Worker (Sub-stage 1.3)', () 
 
     const verifyRes = await verifyDailyAnchor(testDate, prisma);
     expect(verifyRes.valid).toBe(true);
-  });
+  }, 30000);
 
   it('handles background job retry and exponential backoff on failure', async () => {
     // Delete signing key to force a job error

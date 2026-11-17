@@ -12,6 +12,7 @@ export async function GET(req: NextRequest) {
     const workOrders = await getWorkOrders(user);
     return NextResponse.json({ workOrders, count: workOrders.length });
   } catch (err: any) {
+    console.error('[API /api/work-orders GET error]:', err);
     return NextResponse.json({ error: err.message ?? 'Failed to fetch work orders' }, { status: 500 });
   }
 }
@@ -28,6 +29,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ success: true, workOrder }, { status: 201 });
   } catch (err: any) {
+    console.error('[API /api/work-orders POST error]:', err);
     return NextResponse.json({ error: err.message ?? 'Failed to create work order' }, { status: 400 });
   }
 }

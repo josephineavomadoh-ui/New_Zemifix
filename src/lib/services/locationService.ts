@@ -14,10 +14,23 @@ export async function createLocation(params: {
   createdByUserId: string;
 }) {
   return await prisma.$transaction(async (tx: any) => {
-    // 1. Verify branch exists
+    // 1. Verify branch exists and is active
     const branch = await tx.branch.findUnique({ where: { id: params.branchId } });
     if (!branch || !branch.isActive || branch.deletedAt !== null) {
-      throw new Error('BRANCH_NOT_FOUND: Assigned branch does not exist.');
+      throw new Error('BRANCH_INACTIVE: The selected operating branch is inactive or deleted. Locations can only be created under active branches.');
+    }
+
+    // 2. Check location code uniqueness under this branch
+    const existingLoc = await tx.location.findUnique({
+      where: { branchId_code: { branchId: params.branchId, code: params.code } },
+    });
+
+    if (existingLoc) {
+      if (existingLoc.deletedAt !== null) {
+        throw new Error(`LOCATION_CODE_RESERVED: Location code "${params.code}" is reserved by an archived location. Please use a different location code.`);
+      } else {
+        throw new Error(`LOCATION_CODE_EXISTS: Location code "${params.code}" already exists for this branch.`);
+      }
     }
 
     let parentPath = '/';

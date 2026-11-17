@@ -9,7 +9,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const requisitions = await getPurchaseRequisitions(user);
+    const { searchParams } = new URL(req.url);
+    const search = searchParams.get('search') ?? undefined;
+    const status = searchParams.get('status') ?? undefined;
+    const branchId = searchParams.get('branchId') ?? undefined;
+
+    const requisitions = await getPurchaseRequisitions(user, { search, status, branchId });
     return NextResponse.json({ requisitions, count: requisitions.length });
   } catch (err: any) {
     return NextResponse.json({ error: err.message ?? 'Failed to fetch purchase requisitions' }, { status: 500 });

@@ -38,6 +38,8 @@ export async function POST(
 
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
+    const caption = (formData.get('caption') as string | null) ?? '';
+    const evidenceType = (formData.get('evidenceType') as string | null) ?? 'GENERAL';
 
     if (!file) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
@@ -75,11 +77,16 @@ export async function POST(
 
     const fileUrl = `work-orders/${fileName}`;
 
+    // Construct display name with evidence prefix and caption if provided
+    const displayLabel = caption.trim()
+      ? `[${evidenceType}] ${caption.trim()}`
+      : `[${evidenceType}] ${file.name}`;
+
     const attachment = await prisma.workOrderAttachment.create({
       data: {
         workOrderId: id,
         uploaderUserId: user.id,
-        fileName: file.name.substring(0, 200),
+        fileName: displayLabel.substring(0, 200),
         fileUrl,
         fileSize: fileBuffer.length,
         mimeType,

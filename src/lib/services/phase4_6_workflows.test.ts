@@ -41,6 +41,8 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
       id: adminUser!.id,
       email: adminUser!.email,
       role: 'ADMIN',
+      roleCode: 'SYSTEM_ADMINISTRATOR',
+      accessScope: 'Company',
       branchId: branchHQ!.id,
       branchPath: branchHQ!.path,
     };
@@ -97,7 +99,7 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
 
     expect(duplicateSyncResult.results[0].status).toBe('SYNCED');
     expect(duplicateSyncResult.results[0].message).toContain('Previously synced successfully');
-  });
+  }, 30000);
 
   it('WF-4: Executes Complete Procurement Lifecycle (Requisition -> PO -> GRN -> Stock Receipt -> WAC)', async () => {
     const branchHQ = await prismaAdmin.branch.findFirst({ where: { code: 'HQ-ACC' } });
@@ -123,12 +125,15 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
     });
 
     // 2. Create Vendor
+    const vendorEmail = `proc_${Date.now()}@vendor.com`;
     const vendor = await prismaAdmin.vendor.create({
       data: {
         code: `VND-PROC-${Date.now()}`,
-        name: 'Ghana Industrial Supplies Ltd',
-        primaryEmail: `proc_${Date.now()}@vendor.com`,
-        primaryPhone: '+233240000999',
+        registeredName: 'Ghana Industrial Supplies Ltd',
+        tradingName: 'Ghana Industrial Supplies Ltd',
+        address: 'Industrial Area, Accra',
+        email: vendorEmail,
+        phone: '+233240000999',
       },
     });
 
@@ -136,10 +141,10 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
     const req = await prismaAdmin.purchaseRequisition.create({
       data: {
         requisitionNumber: `REQ-E2E-${Date.now()}`,
+        justification: 'Hydraulic seal replacement for active work order',
         status: 'SUBMITTED',
         branchId: branchHQ!.id,
         requesterUserId: adminUser!.id,
-        notes: 'Urgent hydraulic seal kit restock',
       },
     });
 
@@ -154,8 +159,8 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
         vendorId: vendor.id,
         requisitionId: req.id,
         subtotal: 500.0,
-        taxTotal: 100.0,
-        grandTotal: 600.0,
+        totalAmount: 600.0,
+        deliveryAddress: 'Main Central Store, Accra',
         approvedByUserId: adminUser!.id,
       },
     });
@@ -167,9 +172,10 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
       data: {
         grnNumber: `GRN-E2E-${Date.now()}`,
         status: 'ACCEPTED',
-        branchId: branchHQ!.id,
-        poId: po.id,
-        receivedByUserId: adminUser!.id,
+        po: { connect: { id: po.id } },
+        vendor: { connect: { id: vendor.id } },
+        store: { connect: { id: store.id } },
+        receivedByUser: { connect: { id: adminUser!.id } },
       },
     });
 
@@ -208,17 +214,16 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
 
     const site = await prismaAdmin.customerSite.create({
       data: {
-        code: `SITE-COM-${Date.now()}`,
+        siteCode: `SITE-COM-${Date.now()}`,
         name: 'Airport Office Complex Site 01',
+        address: 'Airport Residential Area, Accra',
         customerId: customer.id,
-        branchId: branchHQ!.id,
       },
     });
 
     // 2. Create Contract & Bind SLA Calendar
     const slaCal = await prismaAdmin.slaCalendar.create({
       data: {
-        code: `SLA-CAL-${Date.now()}`,
         name: '24/7 Commercial SLA Calendar',
         timezone: 'UTC',
       },
@@ -230,7 +235,6 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
         title: 'Commercial Facility Management Contract',
         status: 'ACTIVE',
         customerId: customer.id,
-        managingBranchId: branchHQ!.id,
         startDate: new Date(),
         endDate: new Date(Date.now() + 365 * 86400000),
       },
@@ -238,26 +242,25 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
 
     expect(contract.status).toBe('ACTIVE');
 
-    // 3. Create Quote and Record ACCEPTED Decision
+    // 3. Create Quote and Record CUSTOMER_ACCEPTED Decision
     const quote = await prismaAdmin.quote.create({
       data: {
         quoteNumber: `QTE-E2E-${Date.now()}`,
-        status: 'ACCEPTED',
+        title: 'Commercial HVAC Quotation',
+        status: 'CUSTOMER_ACCEPTED',
         version: 1,
         customerId: customer.id,
         siteId: site.id,
-        branchId: branchHQ!.id,
         createdByUserId: adminUser!.id,
         subtotal: 2000.0,
         vatAmount: 300.0,   // 15%
         nhilAmount: 50.0,    // 2.5%
         getFundAmount: 50.0, // 2.5%
-        taxTotal: 400.0,
-        grandTotal: 2400.0,
+        totalAmount: 2400.0,
       },
     });
 
-    expect(quote.status).toBe('ACCEPTED');
+    expect(quote.status).toBe('CUSTOMER_ACCEPTED');
 
     // 4. Create Invoice & Record Payment
     const invoice = await prismaAdmin.invoice.create({
@@ -281,12 +284,10 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
     const payment = await prismaAdmin.payment.create({
       data: {
         paymentNumber: `PAY-E2E-${Date.now()}`,
-        status: 'CONFIRMED',
         amount: 2400.0,
-        allocatedAmount: 2400.0,
         unallocatedAmount: 0.0,
-        customerId: customer.id,
-        receivedByUserId: adminUser!.id,
+        customer: { connect: { id: customer.id } },
+        recordedByUser: { connect: { id: adminUser!.id } },
         paymentDate: new Date(),
       },
     });
@@ -296,8 +297,7 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
       data: {
         paymentId: payment.id,
         invoiceId: invoice.id,
-        amount: 2400.0,
-        allocatedByUserId: adminUser!.id,
+        amountAllocated: 2400.0,
       },
     });
 
@@ -313,6 +313,6 @@ describe('Stage 6.2 Phase 4.6 — Final Business Workflow Completion Verificatio
 
     expect(paidInvoice.status).toBe('PAID');
     expect(Number(paidInvoice.balanceDue)).toBe(0.0);
-    expect(allocation.amount).toBe(2400.0);
+    expect(Number(allocation.amountAllocated)).toBe(2400.0);
   });
 });

@@ -24,12 +24,20 @@ describe('Asset Registration Integrity & Managing Organization Fallback (Sub-sta
     expect(adminUser).toBeDefined();
     expect(category).toBeDefined();
 
+    let location = await prisma.location.findFirst({ where: { branchId: branchHQ!.id } });
+    if (!location) {
+      location = await prisma.location.create({
+        data: { code: 'LOC-REG-01', name: 'Registration Test Location', branchId: branchHQ!.id },
+      });
+    }
+
     // Omit managingBranchId and managingOrgType
     const asset = await createAsset({
       assetTag: `AS001-${Date.now()}`,
       name: 'Air Condition',
       categoryId: category!.id,
       branchId: branchHQ!.id,
+      locationId: location.id,
       createdByUserId: adminUser!.id,
     });
 
@@ -44,11 +52,19 @@ describe('Asset Registration Integrity & Managing Organization Fallback (Sub-sta
     const adminUser = await prisma.user.findFirst({ where: { email: 'admin@zemifix.local' } });
     const category = await prisma.assetCategory.findFirst();
 
+    let location = await prisma.location.findFirst({ where: { branchId: branchHQ!.id } });
+    if (!location) {
+      location = await prisma.location.create({
+        data: { code: 'LOC-REG-01', name: 'Registration Test Location', branchId: branchHQ!.id },
+      });
+    }
+
     const asset = await createAsset({
       assetTag: `AS002-${Date.now()}`,
       name: 'Chiller Unit',
       categoryId: category!.id,
       branchId: branchHQ!.id,
+      locationId: location.id,
       managingBranchId: branchTema!.id, // Explicit managing branch
       createdByUserId: adminUser!.id,
     });

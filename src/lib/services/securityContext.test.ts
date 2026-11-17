@@ -53,7 +53,7 @@ describe('PostgreSQL Runtime Role Separation & Transaction-Scoped Security Conte
       branchPath: '/HQ-ACC/',
       departmentId: '01a1baaa-888d-7bd6-9f85-c15f0bb05f02',
       accessScope: 'BranchAndBelow',
-      realm: 'STAFF',
+      realm: 'STAFF' as const,
     };
 
     let innerContext: any = null;
@@ -78,13 +78,13 @@ describe('PostgreSQL Runtime Role Separation & Transaction-Scoped Security Conte
     const user1Context = {
       userId: '11111111-1111-1111-1111-111111111111',
       accessScope: 'Branch',
-      realm: 'STAFF',
+      realm: 'STAFF' as const,
     };
 
     const user2Context = {
       userId: '22222222-2222-2222-2222-222222222222',
       accessScope: 'Department',
-      realm: 'STAFF',
+      realm: 'STAFF' as const,
     };
 
     let ctx1: any = null;

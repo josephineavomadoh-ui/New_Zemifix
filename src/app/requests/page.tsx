@@ -13,6 +13,7 @@ export default function MaintenanceRequestsPage() {
   const [assets, setAssets] = useState<any[]>([]);
   const [locations, setLocations] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
 
   // Form State
   const [isFormOpen, setIsFormOpen] = useState<boolean>(false);
@@ -23,8 +24,8 @@ export default function MaintenanceRequestsPage() {
   const [priority, setPriority] = useState<string>('MEDIUM');
   const [submitting, setSubmitting] = useState<boolean>(false);
 
-  const fetchRequests = async () => {
-    setLoading(true);
+  const fetchRequests = async (isBackground = false) => {
+    if (!isBackground) setLoading(true);
     try {
       const res = await fetch('/api/requests');
       const data = await res.json();
@@ -37,7 +38,7 @@ export default function MaintenanceRequestsPage() {
   };
 
   useEffect(() => {
-    fetchRequests();
+    fetchRequests(false);
 
     fetch('/api/assets')
       .then((res) => res.json())
@@ -52,6 +53,7 @@ export default function MaintenanceRequestsPage() {
 
   const handleCreateRequest = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
     try {
       const res = await fetch('/api/requests', {
@@ -72,7 +74,7 @@ export default function MaintenanceRequestsPage() {
         setAssetId('');
         setLocationId('');
         setIsFormOpen(false);
-        fetchRequests();
+        await fetchRequests(true);
       }
     } catch (err) {
       console.error(err);
@@ -82,6 +84,8 @@ export default function MaintenanceRequestsPage() {
   };
 
   const handleReview = async (requestId: string, action: 'CONVERT' | 'REJECT') => {
+    if (reviewingId) return; // Prevent duplicate clicks
+    setReviewingId(requestId);
     try {
       const res = await fetch(`/api/requests/${requestId}/review`, {
         method: 'POST',
@@ -90,13 +94,15 @@ export default function MaintenanceRequestsPage() {
       });
 
       if (res.ok) {
-        fetchRequests();
+        await fetchRequests(true);
       } else {
         const data = await res.json();
         alert(data.error || 'Failed to review request');
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      setReviewingId(null);
     }
   };
 
@@ -263,15 +269,17 @@ export default function MaintenanceRequestsPage() {
                         <div className="flex items-center justify-end gap-2">
                           <button
                             onClick={() => handleReview(req.id, 'CONVERT')}
-                            className="rounded px-2.5 py-1 text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
+                            disabled={reviewingId === req.id}
+                            className="rounded px-2.5 py-1 text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700 transition-colors disabled:opacity-50"
                           >
-                            Convert to WO
+                            {reviewingId === req.id ? 'Converting…' : 'Convert to WO'}
                           </button>
                           <button
                             onClick={() => handleReview(req.id, 'REJECT')}
-                            className="rounded px-2.5 py-1 text-xs font-medium border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors"
+                            disabled={reviewingId === req.id}
+                            className="rounded px-2.5 py-1 text-xs font-medium border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 transition-colors disabled:opacity-50"
                           >
-                            Reject
+                            {reviewingId === req.id ? 'Rejecting…' : 'Reject'}
                           </button>
                         </div>
                       ) : req.convertedWorkOrder ? (

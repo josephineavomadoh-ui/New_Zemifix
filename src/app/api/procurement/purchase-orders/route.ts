@@ -5,11 +5,14 @@ import { createPurchaseOrder, getPurchaseOrders } from '@/src/lib/services/procu
 export async function GET(req: NextRequest) {
   try {
     const user = await getCurrentUser(req);
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const purchaseOrders = await getPurchaseOrders(user);
+    const { searchParams } = new URL(req.url);
+    const search = searchParams.get('search') ?? undefined;
+    const status = searchParams.get('status') ?? undefined;
+    const vendorId = searchParams.get('vendorId') ?? undefined;
+
+    const purchaseOrders = await getPurchaseOrders(user, { search, status, vendorId });
     return NextResponse.json({ purchaseOrders, count: purchaseOrders.length });
   } catch (err: any) {
     return NextResponse.json({ error: err.message ?? 'Failed to fetch purchase orders' }, { status: 500 });
@@ -19,9 +22,7 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const user = await getCurrentUser(req);
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const body = await req.json();
     const purchaseOrder = await createPurchaseOrder(user, body);

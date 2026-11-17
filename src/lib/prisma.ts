@@ -12,7 +12,13 @@ const modelsWithoutId = new Set(['RolePermission']);
  * This guarantees time-ordered primary keys on high-throughput tables.
  */
 function createExtendedPrismaClient() {
+  const runtimeDbUrl = process.env.APP_DATABASE_URL || process.env.DATABASE_URL;
   const basePrisma = new PrismaClient({
+    datasources: {
+      db: {
+        url: runtimeDbUrl,
+      },
+    },
     log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
   });
 

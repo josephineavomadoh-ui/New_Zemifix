@@ -7,8 +7,31 @@ import {
   updatePendingPhotoStatus,
 } from './db';
 
+let isSyncing = false;
+
 /**
- * Uploads all PENDING photos from the local IndexedDB pendingPhotos store to
+ * Registers W3C Background Sync with the Service Worker if supported by the browser.
+ */
+export async function registerBackgroundSync(): Promise<boolean> {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    return false;
+  }
+
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    if ('sync' in registration) {
+      // @ts-ignore
+      await registration.sync.register('zemifix-pwa-sync');
+      return true;
+    }
+  } catch (err) {
+    console.warn('[PWA] W3C Background Sync registration unavailable/failed:', err);
+  }
+  return false;
+}
+
+/**
+ * Uploads all PENDING and FAILED photos from the local IndexedDB pendingPhotos store to
  * the server attachment endpoint, updating each record's status as it goes.
  */
 export async function uploadPendingPhotos(): Promise<{
@@ -20,7 +43,7 @@ export async function uploadPendingPhotos(): Promise<{
   }
 
   const allPhotos = await getPendingPhotos();
-  const pending = allPhotos.filter((p) => p.uploadStatus === 'PENDING');
+  const pending = allPhotos.filter((p) => p.uploadStatus === 'PENDING' || p.uploadStatus === 'FAILED');
 
   let uploadedCount = 0;
   let failedCount = 0;
@@ -32,11 +55,12 @@ export async function uploadPendingPhotos(): Promise<{
     try {
       const formData = new FormData();
       formData.append('file', photo.blob, photo.fileName);
+      if (photo.caption) formData.append('caption', photo.caption);
+      if (photo.evidenceType) formData.append('evidenceType', photo.evidenceType);
 
       res = await fetch(`/api/work-orders/${photo.workOrderId}/attachments`, {
         method: 'POST',
         body: formData,
-        // No Content-Type header — browser sets it with the multipart boundary
       });
 
       if (res.ok) {
@@ -58,25 +82,31 @@ export async function uploadPendingPhotos(): Promise<{
 }
 
 /**
- * Flushes client-side IndexedDB sync outbox queue to server batch API
+ * Internal worker function for flushing IndexedDB sync outbox queue to server batch API.
  */
-export async function flushOfflineSyncQueue(): Promise<{
+async function internalFlushOfflineSyncQueue(): Promise<{
   success: boolean;
   syncedCount: number;
   conflictCount: number;
   failedCount: number;
 }> {
-  if (typeof window === 'undefined' || !navigator.onLine) {
+  if (isSyncing) {
+    console.warn('[PWA] Sync flush skipped: in-memory sync process currently running.');
     return { success: false, syncedCount: 0, conflictCount: 0, failedCount: 0 };
   }
 
-  await uploadPendingPhotos();
+  isSyncing = true;
 
   try {
+    await uploadPendingPhotos();
+
     const queuedMutations = await getQueuedOutboxMutations();
     if (queuedMutations.length === 0) {
       return { success: true, syncedCount: 0, conflictCount: 0, failedCount: 0 };
     }
+
+    // Preserve strict chronological mutation order
+    queuedMutations.sort((a, b) => a.timestamp - b.timestamp);
 
     const payload = {
       mutations: queuedMutations.map((m) => ({
@@ -129,5 +159,48 @@ export async function flushOfflineSyncQueue(): Promise<{
   } catch (err) {
     console.error('Offline sync flush failed:', err);
     return { success: false, syncedCount: 0, conflictCount: 0, failedCount: 0 };
+  } finally {
+    isSyncing = false;
   }
+}
+
+/**
+ * Flushes client-side IndexedDB sync outbox queue to server batch API.
+ * Uses Web Locks API (`navigator.locks`) when available for cross-tab concurrency prevention.
+ */
+export async function flushOfflineSyncQueue(): Promise<{
+  success: boolean;
+  syncedCount: number;
+  conflictCount: number;
+  failedCount: number;
+}> {
+  if (typeof window === 'undefined' || !navigator.onLine) {
+    return { success: false, syncedCount: 0, conflictCount: 0, failedCount: 0 };
+  }
+
+  // Cross-Tab / Cross-Worker Lock (Web Locks API)
+  if (typeof navigator !== 'undefined' && 'locks' in navigator) {
+    let result = { success: false, syncedCount: 0, conflictCount: 0, failedCount: 0 };
+    await navigator.locks.request('zemifix-sync-lock', { ifAvailable: true }, async (lock) => {
+      if (!lock) {
+        console.warn('[PWA] Cross-tab sync skipped: another tab or worker holds zemifix-sync-lock.');
+        return;
+      }
+      result = await internalFlushOfflineSyncQueue();
+    });
+    return result;
+  }
+
+  return await internalFlushOfflineSyncQueue();
+}
+
+// Attach Service Worker message listener in browser environment
+if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type === 'TRIGGER_BACKGROUND_SYNC') {
+      flushOfflineSyncQueue().catch((err) =>
+        console.error('[PWA] Background Sync trigger flush error:', err)
+      );
+    }
+  });
 }

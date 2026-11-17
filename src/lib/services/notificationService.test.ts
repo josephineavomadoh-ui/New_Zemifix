@@ -149,6 +149,9 @@ describe('notification event generation', () => {
       notificationPreference: {
         findUnique: vi.fn().mockResolvedValue(null),
       },
+      notificationTemplate: {
+        findFirst: vi.fn().mockResolvedValue(null),
+      },
     });
     const emailProvider = {
       send: vi.fn().mockRejectedValue(new Error('provider unavailable')),

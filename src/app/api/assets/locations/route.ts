@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/src/lib/auth';
+import { prisma } from '@/src/lib/prisma';
 import { createLocation, getLocationTree } from '@/src/lib/services/locationService';
 
 export async function GET(req: NextRequest) {
@@ -27,8 +28,22 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
+    let branchId = body.branchId || user.branchId;
+
+    if (!branchId) {
+      const activeBranch = await prisma.branch.findFirst({ where: { isActive: true, deletedAt: null } });
+      if (!activeBranch) {
+        return NextResponse.json(
+          { error: 'NO_ACTIVE_BRANCH: Please create at least one active branch in Organization before creating locations.' },
+          { status: 400 }
+        );
+      }
+      branchId = activeBranch.id;
+    }
+
     const location = await createLocation({
       ...body,
+      branchId,
       createdByUserId: user.id,
     });
 

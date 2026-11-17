@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Building2, Save, Wrench } from 'lucide-react';
+import { ArrowLeft, Building2, Save, Wrench, Upload, Camera } from 'lucide-react';
 
 interface AssetCategory {
   id: string;
@@ -36,6 +36,10 @@ export default function NewAssetPage() {
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+
   const [form, setForm] = useState({
     assetTag: '',
     name: '',
@@ -130,6 +134,20 @@ export default function NewAssetPage() {
     setForm((current) => ({ ...current, [key]: value }));
   };
 
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      setError('File too large: Maximum asset photograph size is 5 MB.');
+      return;
+    }
+
+    setSelectedImageFile(file);
+    setImagePreviewUrl(URL.createObjectURL(file));
+    setError(null);
+  };
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setSubmitting(true);
@@ -143,6 +161,7 @@ export default function NewAssetPage() {
           name: form.name.trim(),
           categoryId: form.categoryId,
           branchId: form.branchId || null,
+          managingBranchId: form.branchId || null,
           locationId: form.locationId || null,
           serialNumber: form.serialNumber.trim() || null,
           manufacturer: form.manufacturer.trim() || null,
@@ -155,6 +174,21 @@ export default function NewAssetPage() {
       if (!response.ok) {
         throw new Error(data?.message || data?.error || `Unable to register asset (HTTP ${response.status}).`);
       }
+
+      const newAssetId = data.asset?.id;
+      if (newAssetId && selectedImageFile) {
+        const imageFormData = new FormData();
+        imageFormData.append('image', selectedImageFile);
+        const imageRes = await fetch(`/api/assets/${newAssetId}/image`, {
+          method: 'POST',
+          body: imageFormData,
+        });
+        if (!imageRes.ok) {
+          const imgData = await imageRes.json();
+          console.error('Failed to upload image during creation:', imgData.error);
+        }
+      }
+
       router.push('/dashboard/assets');
       router.refresh();
     } catch (submitError) {
@@ -177,7 +211,7 @@ export default function NewAssetPage() {
           </span>
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-[#080E29]">Register an asset</h1>
-            <p className="mt-1 text-sm text-slate-500">Add equipment to the live asset register.</p>
+            <p className="mt-1 text-sm text-slate-500">Add equipment to the live asset register with photograph support.</p>
           </div>
         </div>
       </div>
@@ -197,6 +231,27 @@ export default function NewAssetPage() {
         <section>
           <h2 className="text-sm font-semibold text-[#080E29]">Asset information</h2>
           <p className="mt-1 text-xs text-slate-500">Fields marked required are needed by the asset register.</p>
+
+          {/* Asset Photograph Upload */}
+          <div className="mt-4 flex items-center gap-4 rounded-xl border border-dashed border-slate-200 p-4 bg-slate-50/50">
+            <div className="h-20 w-20 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-white flex items-center justify-center">
+              {imagePreviewUrl ? (
+                <img src={imagePreviewUrl} alt="Asset preview" className="h-full w-full object-cover" />
+              ) : (
+                <Wrench className="h-8 w-8 text-slate-400" />
+              )}
+            </div>
+            <div className="space-y-1.5 flex-1">
+              <span className="text-xs font-bold text-slate-800 block">Asset Photograph</span>
+              <p className="text-[11px] text-slate-500">Upload a clear primary photo (JPEG, PNG, WebP up to 5MB).</p>
+              <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer transition-colors shadow-2xs">
+                <Upload className="h-3.5 w-3.5 text-[#FF5B00]" />
+                {selectedImageFile ? 'Change Photo' : 'Select Photo'}
+                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={handleImageSelect} className="hidden" />
+              </label>
+            </div>
+          </div>
+
           <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
             <label className="text-xs font-medium text-slate-700">
               Asset tag <span className="text-[#FF5B00]">*</span>

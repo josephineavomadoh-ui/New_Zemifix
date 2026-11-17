@@ -22,9 +22,10 @@ export default function WorkOrderWorkspacePage({ params }: { params: Promise<{ i
   const [isLaborModalOpen, setIsLaborModalOpen] = useState<boolean>(false);
   const [isPartModalOpen, setIsPartModalOpen] = useState<boolean>(false);
   const [statusUpdating, setStatusUpdating] = useState<boolean>(false);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
 
-  const fetchWorkOrderDetail = async () => {
-    setLoading(true);
+  const fetchWorkOrderDetail = async (isBackground = false) => {
+    if (!isBackground) setLoading(true);
     try {
       const res = await fetch(`/api/work-orders/${id}`);
       const data = await res.json();
@@ -37,11 +38,13 @@ export default function WorkOrderWorkspacePage({ params }: { params: Promise<{ i
   };
 
   useEffect(() => {
-    fetchWorkOrderDetail();
+    fetchWorkOrderDetail(false);
   }, [id]);
 
   const handleStatusTransition = async (newStatus: string, reason?: string) => {
+    if (statusUpdating) return;
     setStatusUpdating(true);
+    setPendingAction(newStatus);
     try {
       const res = await fetch(`/api/work-orders/${id}/status`, {
         method: 'POST',
@@ -50,7 +53,7 @@ export default function WorkOrderWorkspacePage({ params }: { params: Promise<{ i
       });
 
       if (res.ok) {
-        fetchWorkOrderDetail();
+        await fetchWorkOrderDetail(true);
       } else {
         const data = await res.json();
         alert(data.error || 'Failed to update status');
@@ -59,6 +62,7 @@ export default function WorkOrderWorkspacePage({ params }: { params: Promise<{ i
       console.error(err);
     } finally {
       setStatusUpdating(false);
+      setPendingAction(null);
     }
   };
 
@@ -122,7 +126,7 @@ export default function WorkOrderWorkspacePage({ params }: { params: Promise<{ i
                 disabled={statusUpdating}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 transition-colors disabled:opacity-50"
               >
-                <PlayCircle className="h-4 w-4" /> Start Work
+                <PlayCircle className="h-4 w-4" /> {pendingAction === 'IN_PROGRESS' ? 'Starting…' : 'Start Work'}
               </button>
             )}
 
@@ -133,14 +137,14 @@ export default function WorkOrderWorkspacePage({ params }: { params: Promise<{ i
                   disabled={statusUpdating}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 transition-colors disabled:opacity-50"
                 >
-                  <PauseCircle className="h-4 w-4" /> Pause Work
+                  <PauseCircle className="h-4 w-4" /> {pendingAction === 'ON_HOLD' ? 'Pausing…' : 'Pause Work'}
                 </button>
                 <button
                   onClick={() => handleStatusTransition('COMPLETED')}
                   disabled={statusUpdating}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-700 transition-colors disabled:opacity-50"
                 >
-                  <CheckCircle2 className="h-4 w-4" /> Complete
+                  <CheckCircle2 className="h-4 w-4" /> {pendingAction === 'COMPLETED' ? 'Completing…' : 'Complete'}
                 </button>
               </>
             )}
@@ -151,7 +155,7 @@ export default function WorkOrderWorkspacePage({ params }: { params: Promise<{ i
                 disabled={statusUpdating}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 transition-colors disabled:opacity-50"
               >
-                <PlayCircle className="h-4 w-4" /> Resume Work
+                <PlayCircle className="h-4 w-4" /> {pendingAction === 'IN_PROGRESS' ? 'Resuming…' : 'Resume Work'}
               </button>
             )}
 
@@ -164,7 +168,7 @@ export default function WorkOrderWorkspacePage({ params }: { params: Promise<{ i
                 disabled={statusUpdating}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-600 hover:bg-rose-100 transition-colors disabled:opacity-50"
               >
-                <XCircle className="h-4 w-4" /> Cancel
+                <XCircle className="h-4 w-4" /> {pendingAction === 'CANCELLED' ? 'Cancelling…' : 'Cancel'}
               </button>
             )}
           </div>

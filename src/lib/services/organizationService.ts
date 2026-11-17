@@ -155,6 +155,10 @@ export async function getCompany() {
 export async function getBranches() {
   try {
     const branches = await prisma.branch.findMany({
+      where: {
+        isActive: true,
+        deletedAt: null,
+      },
       orderBy: { path: 'asc' },
       include: {
         parent: { select: { id: true, name: true, code: true } },
@@ -178,6 +182,10 @@ export async function getBranches() {
 export async function getDepartments() {
   try {
     const departments = await prisma.department.findMany({
+      where: {
+        isActive: true,
+        deletedAt: null,
+      },
       orderBy: { path: 'asc' },
       include: {
         parent: { select: { id: true, name: true, code: true } },

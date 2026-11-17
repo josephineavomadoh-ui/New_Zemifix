@@ -2,8 +2,9 @@
 
 import React, { useEffect, useState, use } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Layers, AlertTriangle, Activity } from 'lucide-react';
+import { ArrowLeft, Layers, AlertTriangle, Activity, Camera, Trash2, Upload } from 'lucide-react';
 import { AssetStatusBadge } from '@/src/components/assets/AssetStatusBadge';
+import { AssetThumbnail } from '@/src/components/assets/AssetThumbnail';
 import { MeterReadingModal } from '@/src/components/assets/MeterReadingModal';
 import { DowntimeLogModal } from '@/src/components/assets/DowntimeLogModal';
 import { PageHeader } from '@/src/components/ui/PageHeader';
@@ -19,6 +20,8 @@ export default function AssetDetailPage({ params }: { params: Promise<{ id: stri
   const [selectedMeter, setSelectedMeter] = useState<any>(null);
   const [isReadingModalOpen, setIsReadingModalOpen] = useState<boolean>(false);
   const [isDowntimeModalOpen, setIsDowntimeModalOpen] = useState<boolean>(false);
+  const [imageActionLoading, setImageActionLoading] = useState<boolean>(false);
+  const [imageError, setImageError] = useState<string | null>(null);
 
   const fetchAssetDetail = async () => {
     setLoading(true);
@@ -36,6 +39,53 @@ export default function AssetDetailPage({ params }: { params: Promise<{ id: stri
   useEffect(() => {
     fetchAssetDetail();
   }, [id]);
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImageActionLoading(true);
+    setImageError(null);
+    try {
+      const formData = new FormData();
+      formData.append('image', file);
+
+      const res = await fetch(`/api/assets/${id}/image`, {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to upload asset image.');
+      }
+      await fetchAssetDetail();
+    } catch (err: any) {
+      setImageError(err.message ?? 'Failed to upload image.');
+    } finally {
+      setImageActionLoading(false);
+    }
+  };
+
+  const handleImageDelete = async () => {
+    if (!confirm('Are you sure you want to remove this asset photograph?')) return;
+
+    setImageActionLoading(true);
+    setImageError(null);
+    try {
+      const res = await fetch(`/api/assets/${id}/image`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to remove asset image.');
+      }
+      await fetchAssetDetail();
+    } catch (err: any) {
+      setImageError(err.message ?? 'Failed to remove image.');
+    } finally {
+      setImageActionLoading(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -143,39 +193,76 @@ export default function AssetDetailPage({ params }: { params: Promise<{ id: stri
 
       {/* Overview */}
       {activeTab === 'overview' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Technical Specifications</h3>
-            <dl className="grid grid-cols-2 gap-4">
-              {[
-                { label: 'Manufacturer', value: asset.manufacturer ?? 'N/A' },
-                { label: 'Model Number', value: asset.modelNumber ?? 'N/A' },
-                { label: 'Serial Number', value: asset.serialNumber ?? 'N/A' },
-                { label: 'Criticality Rating', value: `Level ${asset.criticality}` },
-              ].map(({ label, value }) => (
-                <div key={label}>
-                  <dt className="text-[11px] text-slate-400 font-medium">{label}</dt>
-                  <dd className="mt-0.5 text-sm font-semibold text-slate-700">{value}</dd>
-                </div>
-              ))}
-            </dl>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Asset Photograph Card */}
+          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4 flex flex-col items-center text-center">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 w-full text-left">Asset Photograph</h3>
+
+            <div className="relative group">
+              <div className="h-40 w-40 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center shadow-inner">
+                <AssetThumbnail assetId={asset.id} imageUrl={asset.imageUrl} assetName={asset.name} size="lg" />
+              </div>
+            </div>
+
+            {imageError && (
+              <p className="text-xs text-rose-600 font-medium">{imageError}</p>
+            )}
+
+            <div className="flex flex-wrap items-center justify-center gap-2 w-full pt-2">
+              <label className="inline-flex items-center gap-1.5 rounded-lg bg-[#FF5B00] px-3 py-1.5 text-xs font-bold text-white hover:bg-[#F95700] cursor-pointer transition-colors shadow-2xs">
+                <Upload className="h-3.5 w-3.5" />
+                {asset.imageUrl ? 'Replace Photo' : 'Upload Photo'}
+                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={handleImageUpload} disabled={imageActionLoading} className="hidden" />
+              </label>
+
+              {asset.imageUrl && (
+                <button
+                  onClick={handleImageDelete}
+                  disabled={imageActionLoading}
+                  className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 transition-colors disabled:opacity-50"
+                  title="Remove Photograph"
+                >
+                  <Trash2 className="h-3.5 w-3.5" /> Remove
+                </button>
+              )}
+            </div>
+            <p className="text-[10px] text-slate-400">JPEG, PNG or WebP. Max 5MB.</p>
           </div>
 
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Custody & Responsibilities</h3>
-            <dl className="grid grid-cols-2 gap-4">
-              {[
-                { label: 'Custodian', value: asset.custodianUser?.name ?? 'Unassigned' },
-                { label: 'Responsible User', value: asset.responsibleUser?.name ?? 'Unassigned' },
-                { label: 'Department', value: asset.responsibleDepartment?.name ?? 'Unassigned' },
-                { label: 'Branch', value: asset.branch?.name ?? 'N/A' },
-              ].map(({ label, value }) => (
-                <div key={label}>
-                  <dt className="text-[11px] text-slate-400 font-medium">{label}</dt>
-                  <dd className="mt-0.5 text-sm font-semibold text-slate-700">{value}</dd>
-                </div>
-              ))}
-            </dl>
+          <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Technical Specifications</h3>
+              <dl className="grid grid-cols-2 gap-4">
+                {[
+                  { label: 'Manufacturer', value: asset.manufacturer ?? 'N/A' },
+                  { label: 'Model Number', value: asset.modelNumber ?? 'N/A' },
+                  { label: 'Serial Number', value: asset.serialNumber ?? 'N/A' },
+                  { label: 'Criticality Rating', value: `Level ${asset.criticality}` },
+                ].map(({ label, value }) => (
+                  <div key={label}>
+                    <dt className="text-[11px] text-slate-400 font-medium">{label}</dt>
+                    <dd className="mt-0.5 text-sm font-semibold text-slate-700">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Custody & Responsibilities</h3>
+              <dl className="grid grid-cols-2 gap-4">
+                {[
+                  { label: 'Custodian', value: asset.custodianUser?.name ?? 'Unassigned' },
+                  { label: 'Responsible User', value: asset.responsibleUser?.name ?? 'Unassigned' },
+                  { label: 'Department', value: asset.responsibleDepartment?.name ?? 'Unassigned' },
+                  { label: 'Branch', value: asset.branch?.name ?? 'N/A' },
+                ].map(({ label, value }) => (
+                  <div key={label}>
+                    <dt className="text-[11px] text-slate-400 font-medium">{label}</dt>
+                    <dd className="mt-0.5 text-sm font-semibold text-slate-700">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
           </div>
         </div>
       )}
@@ -217,125 +304,34 @@ export default function AssetDetailPage({ params }: { params: Promise<{ id: stri
         </div>
       )}
 
-      {/* Downtime */}
-      {activeTab === 'downtime' && (
-        <div className="rounded-xl border border-slate-200 bg-white shadow-xs overflow-hidden">
-          <div className="border-b border-slate-200 px-5 py-3.5">
-            <h3 className="text-sm font-semibold text-slate-700">Downtime Log History</h3>
-          </div>
-          {!asset.downtimeLogs?.length ? (
-            <EmptyState icon={AlertTriangle} title="No downtime logged" description="No downtime events have been recorded for this asset." />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead className="border-b border-slate-200 bg-slate-50">
-                  <tr>
-                    <th className={thClass}>Type</th>
-                    <th className={thClass}>Reason</th>
-                    <th className={thClass}>Started</th>
-                    <th className={thClass}>Ended</th>
-                    <th className={thClass}>Duration</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {asset.downtimeLogs.map((dt: any) => (
-                    <tr key={dt.id} className="hover:bg-slate-50 transition-colors">
-                      <td className={`${tdClass} font-medium text-rose-700`}>{dt.downtimeType}</td>
-                      <td className={`${tdClass} text-slate-600`}>{dt.reason}</td>
-                      <td className={`${tdClass} text-slate-500`}>{new Date(dt.startedAt).toLocaleString()}</td>
-                      <td className={`${tdClass} text-slate-500`}>{dt.endedAt ? new Date(dt.endedAt).toLocaleString() : 'Open'}</td>
-                      <td className={`${tdClass} font-mono text-slate-700`}>{dt.durationMinutes ? `${dt.durationMinutes} mins` : 'Active'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Maintenance History */}
-      {activeTab === 'maintenance' && (
-        <div className="rounded-xl border border-slate-200 bg-white shadow-xs overflow-hidden">
-          <div className="border-b border-slate-200 px-5 py-3.5">
-            <h3 className="text-sm font-semibold text-slate-700">Completed & Active Work Orders</h3>
-          </div>
-          {!asset.workOrders?.length ? (
-            <EmptyState icon={Activity} title="No maintenance work orders" description="No work orders have been created for this asset yet." />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead className="border-b border-slate-200 bg-slate-50">
-                  <tr>
-                    <th className={thClass}>WO Number</th>
-                    <th className={thClass}>Title</th>
-                    <th className={thClass}>Type</th>
-                    <th className={thClass}>Status</th>
-                    <th className={thClass}>Assigned Tech</th>
-                    <th className={thClass}>Total Cost</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {asset.workOrders.map((wo: any) => (
-                    <tr key={wo.id} className="hover:bg-slate-50 transition-colors">
-                      <td className={`${tdClass} font-mono font-medium text-[#FF5B00]`}>
-                        <Link href={`/work-orders/${wo.id}`} className="hover:underline">
-                          {wo.workOrderNumber}
-                        </Link>
-                      </td>
-                      <td className={`${tdClass} font-medium text-slate-800`}>{wo.title}</td>
-                      <td className={`${tdClass} text-slate-500`}>{wo.type}</td>
-                      <td className={tdClass}><StatusBadge status={wo.status} /></td>
-                      <td className={`${tdClass} text-slate-600`}>{wo.assignedUser?.name ?? 'Unassigned'}</td>
-                      <td className={`${tdClass} font-mono font-bold text-emerald-700`}>GHS {wo.totalCost}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* History */}
-      {activeTab === 'history' && (
-        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4">
-          <h3 className="text-sm font-semibold text-slate-700">Status History Timeline</h3>
-          {!asset.statusHistory?.length ? (
-            <EmptyState icon={AlertTriangle} title="No status history yet" />
-          ) : (
-            <div className="space-y-2">
-              {asset.statusHistory.map((sh: any) => (
-                <div key={sh.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-4 py-2.5 text-xs">
-                  <span className="font-mono text-slate-400">{new Date(sh.changedAt).toLocaleString()}</span>
-                  <span className="text-slate-400">{sh.fromStatus}</span>
-                  <span className="text-slate-300">→</span>
-                  <span className="font-semibold text-slate-700">{sh.toStatus}</span>
-                  {sh.reason && <span className="ml-auto italic text-slate-400">{sh.reason}</span>}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Modals */}
-      {selectedMeter && (
-        <MeterReadingModal
-          meter={selectedMeter}
-          isOpen={isReadingModalOpen}
-          onClose={() => setIsReadingModalOpen(false)}
-          onSubmitSuccess={fetchAssetDetail}
-        />
-      )}
-
+      {/* Downtime Modal */}
       <DowntimeLogModal
         assetId={asset.id}
         assetName={asset.name}
         isOpen={isDowntimeModalOpen}
         onClose={() => setIsDowntimeModalOpen(false)}
-        onSubmitSuccess={fetchAssetDetail}
+        onSubmitSuccess={() => {
+          setIsDowntimeModalOpen(false);
+          fetchAssetDetail();
+        }}
       />
+
+      {/* Meter Reading Modal */}
+      {selectedMeter && (
+        <MeterReadingModal
+          meter={selectedMeter}
+          isOpen={isReadingModalOpen}
+          onClose={() => {
+            setSelectedMeter(null);
+            setIsReadingModalOpen(false);
+          }}
+          onSubmitSuccess={() => {
+            setSelectedMeter(null);
+            setIsReadingModalOpen(false);
+            fetchAssetDetail();
+          }}
+        />
+      )}
     </div>
   );
 }

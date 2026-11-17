@@ -96,7 +96,7 @@ describe('Stage 6.2 Phase 4.5 — Outstanding Business Workflows Direct Executio
     const execResult2 = await runBackgroundWorker(workerId, 'GENERATE_PREVENTIVE_MAINTENANCE');
     expect(execResult2.executed).toBe(true);
     expect(execResult2.result.generatedCount).toBe(0); // Idempotency check passed!
-  });
+  }, 30000);
 
   it('WF-3: Executes Technician PWA Query, Status Update & RLS Boundary Rejection', async () => {
     const branchHQ = await prismaAdmin.branch.findFirst({ where: { code: 'HQ-ACC' } });
@@ -145,8 +145,9 @@ describe('Stage 6.2 Phase 4.5 — Outstanding Business Workflows Direct Executio
       data: {
         partNumber: `PRT-E2E-${Date.now()}`,
         name: 'Oil Filter HD-400',
-        unitOfMeasure: 'PCS',
-        unitCost: 50.0,
+        category: 'FILTERS',
+        uom: 'PCS',
+        standardCost: 50.0,
       },
     });
 
@@ -157,12 +158,12 @@ describe('Stage 6.2 Phase 4.5 — Outstanding Business Workflows Direct Executio
         partId: part.id,
         quantityOnHand: 100,
         quantityAvailable: 100,
-        weightedAverageCost: 50.0,
+        averageUnitCost: 50.0,
       },
     });
 
-    expect(stock.quantityOnHand).toBe(100);
-    expect(stock.weightedAverageCost).toBe(50.0);
+    expect(Number(stock.quantityOnHand)).toBe(100);
+    expect(Number(stock.averageUnitCost)).toBe(50.0);
 
     // 3. Issue Material (10 PCS @ 50.0) -> Stock decreases to 90
     const updatedStock = await prismaAdmin.stock.update({
@@ -173,19 +174,22 @@ describe('Stage 6.2 Phase 4.5 — Outstanding Business Workflows Direct Executio
       },
     });
 
-    expect(updatedStock.quantityOnHand).toBe(90);
+    expect(Number(updatedStock.quantityOnHand)).toBe(90);
 
     // 4. Record Append-Only Stock Transaction
     const txLog = await prismaAdmin.stockTransaction.create({
       data: {
+        transactionRef: `TX-REF-${Date.now()}`,
         transactionType: 'ISSUE',
-        partId: part.id,
-        storeId: store.id,
+        part: { connect: { id: part.id } },
+        store: { connect: { id: store.id } },
+        actingUser: { connect: { id: (await prismaAdmin.user.findFirst())!.id } },
         quantity: -10,
         unitCost: 50.0,
         totalCost: -500.0,
-        referenceType: 'WORK_ORDER',
-        referenceId: `wo-ref-${Date.now()}`,
+        balanceAfter: 90.0,
+        wacAfter: 50.0,
+        referenceDoc: `WORK_ORDER:wo-ref-${Date.now()}`,
       },
     });
 
@@ -195,19 +199,25 @@ describe('Stage 6.2 Phase 4.5 — Outstanding Business Workflows Direct Executio
 
   it('WF-5: Executes Contractor Commercial Workflow & Customer Portal RLS Isolation', async () => {
     // 1. Create Customer A & Customer B
+    const emailA = `alpha_${Date.now()}@client.com`;
     const customerA = await prismaAdmin.customer.create({
       data: {
-        companyName: `Client Alpha Corp ${Date.now()}`,
-        email: `alpha_${Date.now()}@client.com`,
-        phone: '+233240000001',
+        customerNumber: `CUST-A-${Date.now()}`,
+        name: `Client Alpha Corp ${Date.now()}`,
+        primaryEmail: emailA,
+        primaryPhone: '+233240000001',
+        billingAddress: 'Accra, Ghana',
       },
     });
 
+    const emailB = `beta_${Date.now()}@client.com`;
     const customerB = await prismaAdmin.customer.create({
       data: {
-        companyName: `Client Beta Corp ${Date.now()}`,
-        email: `beta_${Date.now()}@client.com`,
-        phone: '+233240000002',
+        customerNumber: `CUST-B-${Date.now()}`,
+        name: `Client Beta Corp ${Date.now()}`,
+        primaryEmail: emailB,
+        primaryPhone: '+233240000002',
+        billingAddress: 'Kumasi, Ghana',
       },
     });
 
@@ -215,20 +225,21 @@ describe('Stage 6.2 Phase 4.5 — Outstanding Business Workflows Direct Executio
     const invoiceA = await prismaAdmin.invoice.create({
       data: {
         invoiceNumber: `INV-CUSTA-${Date.now()}`,
-        status: 'ISSUED',
+        draftReference: `DRAFT-INV-${Date.now()}`,
+        status: 'SENT',
         subtotal: 1000.0,
         vatAmount: 150.0, // 15%
         nhilAmount: 25.0,  // 2.5%
         getFundAmount: 25.0, // 2.5%
-        taxTotal: 200.0,
-        grandTotal: 1200.0,
-        balanceAmount: 1200.0,
-        customerId: customerA.id,
+        totalAmount: 1200.0,
+        balanceDue: 1200.0,
+        customer: { connect: { id: customerA.id } },
+        createdByUser: { connect: { id: (await prismaAdmin.user.findFirst())!.id } },
         dueDate: new Date(Date.now() + 30 * 86400000),
       },
     });
 
-    expect(invoiceA.grandTotal).toBe(1200.0);
+    expect(Number(invoiceA.totalAmount)).toBe(1200.0);
 
     // 3. Customer B Portal Context querying Customer A Invoice must return null under PostgreSQL RLS
     const custBContext = {

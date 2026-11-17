@@ -38,6 +38,19 @@ self.addEventListener('message', (e) => {
   if (e.data === 'SKIP_WAITING') self.skipWaiting();
 });
 
+// ── Background Sync: handle W3C sync events ───────────────────────────────────
+self.addEventListener('sync', (event) => {
+  if (event.tag === 'zemifix-pwa-sync' || event.tag === 'sync-outbox') {
+    event.waitUntil(
+      self.clients.matchAll({ type: 'window' }).then((clients) => {
+        for (const client of clients) {
+          client.postMessage({ type: 'TRIGGER_BACKGROUND_SYNC' });
+        }
+      })
+    );
+  }
+});
+
 // ── Fetch ────────────────────────────────────────────────────────────────────
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);

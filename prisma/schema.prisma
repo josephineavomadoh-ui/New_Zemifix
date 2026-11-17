@@ -93,6 +93,7 @@ model Branch {
   vendors                 Vendor[]
   purchaseRequisitions    PurchaseRequisition[]
   purchaseOrders          PurchaseOrder[]
+  maintenancePlans        MaintenancePlan[]
 
   @@index([parentId])
   @@index([path])
@@ -625,6 +626,19 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+// 20b. Independent Daily Audit-Chain Head Hash Anchors (External Anchoring Ledger)
+model AuditAnchor {
+  anchorDate      DateTime @id @db.Date // YYYY-MM-DD UTC date
+  sequenceNumber  BigInt   @db.BigInt
+  headHash        String   @db.VarChar(64)
+  entryCount      BigInt   @db.BigInt
+  keyVersion      String   @default("v1") @db.VarChar(20)
+  anchorSignature String   @db.VarChar(128) // SHA-256 HMAC signature of anchor object
+  anchoredAt      DateTime @default(now()) @db.Timestamptz
+
+  @@map("audit_anchors")
+}
+
 // ====================================================
 // STAGE D.2b: ASSET TAXONOMY, EQUIPMENT REGISTER & TELEMETRY
 // ====================================================
@@ -770,6 +784,7 @@ model Asset {
   criticality         Int             @default(3) @db.SmallInt
   manufacturer        String?         @db.VarChar(100)
   modelNumber         String?         @db.VarChar(100)
+  imageUrl            String?         @db.Text
   purchaseCost        Decimal?        @db.Decimal(14, 2)
   purchaseDate        DateTime?       @db.Date
   installationDate    DateTime?       @db.Date
@@ -789,6 +804,7 @@ model Asset {
   workRequests        WorkRequest[]
   workOrders          WorkOrder[]
   publicIntakes       PublicRequestIntake[]
+  maintenancePlans    MaintenancePlan[]
 
   @@index([branchId])
   @@index([locationId])
@@ -1112,6 +1128,9 @@ model WorkOrder {
   slaCycle                   Int               @default(1) @db.Integer
 
   slaBreaches                SlaBreachLog[]
+
+  maintenancePlanId     String?                  @db.Uuid
+  maintenancePlan       MaintenancePlan?         @relation(fields: [maintenancePlanId], references: [id], onDelete: SetNull)
 
   sourceWorkRequests    WorkRequest[]            @relation("RequestConvertedWorkOrder")
   statusHistory         WorkOrderStatusHistory[]
@@ -2139,6 +2158,52 @@ model SlaBreachLog {
   @@index([workOrderId])
   @@index([breachedAt])
   @@map("sla_breach_logs")
+}
+
+enum PMTriggerType {
+  TIME
+  METER
+}
+
+enum PMPlanStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+// 72. Master Preventive Maintenance Plans
+model MaintenancePlan {
+  id                  String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code                String           @unique @db.VarChar(50)
+  name                String           @db.VarChar(150)
+  description         String?          @db.Text
+  assetId             String           @db.Uuid
+  asset               Asset            @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  branchId            String           @db.Uuid
+  branch              Branch           @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  triggerType         PMTriggerType    @default(TIME)
+  frequency           String           @db.VarChar(100)
+  status              PMPlanStatus     @default(ACTIVE)
+  assignedTeam        String?          @db.VarChar(100)
+  estimatedHours      Decimal          @default(0.00) @db.Decimal(10, 2)
+  lastCompleted       DateTime?        @db.Timestamptz
+  nextDue             DateTime         @db.Timestamptz
+  isOverdue           Boolean          @default(false)
+  compliancePercent   Int              @default(100) @db.SmallInt
+  checklist           Json?
+  requiredParts       Json?
+  requiredLabor       Json?
+
+  workOrders          WorkOrder[]
+
+  createdAt           DateTime         @default(now()) @db.Timestamptz
+  updatedAt           DateTime         @updatedAt @db.Timestamptz
+  deletedAt           DateTime?        @db.Timestamptz
+
+  @@index([branchId])
+  @@index([assetId])
+  @@index([status])
+  @@map("maintenance_plans")
 }
 
 // ====================================================

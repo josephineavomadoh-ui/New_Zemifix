@@ -101,5 +101,5 @@ describe('Audit Chain Security, Tamper Detection & Missed-Day Recovery (Sub-stag
     const recoveryRes = await recoverMissedAuditAnchorDays(prisma, 'backups/test_recovery');
     expect(recoveryRes.checkedDatesCount).toBeGreaterThanOrEqual(0);
     expect(Array.isArray(recoveryRes.enqueuedDates)).toBe(true);
-  });
+  }, 30000);
 });

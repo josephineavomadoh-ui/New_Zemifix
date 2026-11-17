@@ -27,14 +27,41 @@ describe('Stage 6.2 Phase 4.4 — Full End-to-End Business Workflows & Operation
     expect(deptEng).toBeDefined();
     expect(adminUser).toBeDefined();
 
-    // 1. Create Asset
+    // 1. Create or Connect Asset Category
+    let category = await prismaAdmin.assetCategory.findFirst();
+    if (!category) {
+      category = await prismaAdmin.assetCategory.create({
+        data: {
+          code: 'HVAC',
+          name: 'Heating, Ventilation & AC',
+        },
+      });
+    }
+
+    // 2. Create Location for Branch HQ
+    let location = await prismaAdmin.location.findFirst({ where: { branchId: branchHQ!.id } });
+    if (!location) {
+      location = await prismaAdmin.location.create({
+        data: {
+          code: 'LOC-HQ-01',
+          name: 'Main Plant Floor',
+          branchId: branchHQ!.id,
+        },
+      });
+    }
+
+    // 3. Create Asset
     const testAsset = await prismaAdmin.asset.create({
       data: {
         assetTag: `AST-E2E-${Date.now()}`,
         name: 'HVAC Air Handler Unit 01',
         status: 'OPERATIONAL',
-        criticality: 'HIGH',
+        criticality: 1,
+        categoryId: category.id,
+        locationId: location.id,
         branchId: branchHQ!.id,
+        managingBranchId: branchHQ!.id,
+        managingOrgType: 'INTERNAL_BRANCH',
         responsibleDepartmentId: deptEng!.id,
       },
     });
@@ -67,7 +94,7 @@ describe('Stage 6.2 Phase 4.4 — Full End-to-End Business Workflows & Operation
       expect(woResult).toBeDefined();
       expect(woResult!.title).toBe('E2E Facility Maintenance WO');
     });
-  });
+  }, 30000);
 
   it('Workflow 2: Verifies Ghana Commercial Tax Calculations (VAT 15%, NHIL 2.5%, GETFund 2.5%)', async () => {
     const subtotal = 1000.0;

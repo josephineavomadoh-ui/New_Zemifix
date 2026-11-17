@@ -13,7 +13,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     const workOrder = await prisma.workOrder.findUnique({
       where: { id },
       include: {
-        asset: { select: { id: true, name: true, assetTag: true, status: true, modelNumber: true, serialNumber: true } },
+        asset: { select: { id: true, name: true, assetTag: true, status: true, modelNumber: true, serialNumber: true, imageUrl: true } },
         location: { select: { id: true, name: true, code: true, building: true, room: true } },
         branch: { select: { id: true, name: true, code: true } },
         department: { select: { id: true, name: true, code: true } },
@@ -35,6 +35,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
     return NextResponse.json({ workOrder });
   } catch (err: any) {
+    console.error(`[API /api/work-orders/${params ? '(id)' : ''} GET error]:`, err);
     return NextResponse.json({ error: err.message ?? 'Failed to fetch work order detail' }, { status: 500 });
   }
 }

@@ -11,6 +11,8 @@ export default function InvoicesPage() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
 
   // Form
   const [isFormOpen, setIsFormOpen] = useState<boolean>(false);
@@ -26,8 +28,12 @@ export default function InvoicesPage() {
   const [paymentAmount, setPaymentAmount] = useState<string>('1000');
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState<boolean>(false);
 
-  const fetchInvoices = async () => {
-    setLoading(true);
+  const fetchInvoices = async (isBackground = false) => {
+    if (isBackground) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     try {
       const res = await fetch('/api/finance/invoices');
       const data = await res.json();
@@ -36,11 +42,12 @@ export default function InvoicesPage() {
       console.error(err);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
   useEffect(() => {
-    fetchInvoices();
+    fetchInvoices(false);
 
     fetch('/api/customers')
       .then((r) => r.json())
@@ -72,7 +79,7 @@ export default function InvoicesPage() {
 
       if (res.ok) {
         setIsFormOpen(false);
-        fetchInvoices();
+        fetchInvoices(true);
       }
     } catch (err) {
       console.error(err);
@@ -82,16 +89,25 @@ export default function InvoicesPage() {
   };
 
   const handleApproveInvoice = async (id: string) => {
+    if (approvingId) return; // Prevent duplicate submission
+    setApprovingId(id);
     try {
       const res = await fetch(`/api/finance/invoices/${id}/approve`, { method: 'POST' });
-      if (res.ok) fetchInvoices();
+      if (res.ok) {
+        await fetchInvoices(true);
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to approve invoice');
+      }
     } catch (err) {
       console.error(err);
+    } finally {
+      setApprovingId(null);
     }
   };
 
   const handleRecordPayment = async () => {
-    if (!selectedInvoice) return;
+    if (!selectedInvoice || submitting) return;
     setSubmitting(true);
     try {
       const res = await fetch('/api/finance/payments', {
@@ -106,7 +122,7 @@ export default function InvoicesPage() {
 
       if (res.ok) {
         setIsPaymentModalOpen(false);
-        fetchInvoices();
+        fetchInvoices(true);
       } else {
         const data = await res.json();
         alert(data.error || 'Payment recording failed');
@@ -277,9 +293,10 @@ export default function InvoicesPage() {
                           {inv.status === 'DRAFT' && (
                             <button
                               onClick={() => handleApproveInvoice(inv.id)}
-                              className="rounded px-2.5 py-1 text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                              disabled={approvingId === inv.id}
+                              className="inline-flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
                             >
-                              Approve
+                              {approvingId === inv.id ? 'Approving…' : 'Approve'}
                             </button>
                           )}
                           {inv.status !== 'DRAFT' && inv.status !== 'PAID' && (

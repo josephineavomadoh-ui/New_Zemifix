@@ -46,13 +46,17 @@ export async function checkRateLimit(
     if (hitCount > maxAttempts) {
       const retryAfterSeconds = Math.ceil((new Date(expiresAt).getTime() - now.getTime()) / 1000);
 
-      await appendAuditLog(prisma, {
-        actorUserId: actorUserId ?? null,
-        action: 'RATE_LIMIT_EXCEEDED',
-        resource: 'rate_limit',
-        resourceId: hashId.slice(0, 32),
-        payload: { action, hitCount, maxAttempts },
-      });
+      try {
+        await appendAuditLog(prisma, {
+          actorUserId: actorUserId ?? null,
+          action: 'RATE_LIMIT_EXCEEDED',
+          resource: 'rate_limit',
+          resourceId: hashId.slice(0, 32),
+          payload: { action, hitCount, maxAttempts },
+        });
+      } catch (auditErr) {
+        console.error('[RateLimit] Audit log error during rate limit check:', auditErr);
+      }
 
       return { allowed: false, remaining: 0, retryAfterSeconds: Math.max(1, retryAfterSeconds) };
     }
@@ -61,6 +65,7 @@ export async function checkRateLimit(
     return { allowed: true, remaining, retryAfterSeconds: 0 };
   } catch (err) {
     console.error('[RateLimit] Database error during rate limit check:', err);
-    return { allowed: true, remaining: 1, retryAfterSeconds: 0 };
+    // FAIL CLOSED on database/infrastructure error
+    return { allowed: false, remaining: 0, retryAfterSeconds: windowMinutes * 60 };
   }
 }

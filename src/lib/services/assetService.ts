@@ -129,10 +129,29 @@ export async function createAsset(params: {
   manufacturer?: string;
   modelNumber?: string;
   purchaseCost?: number;
+  imageUrl?: string | null;
   createdByUserId: string;
 }) {
   return await prisma.$transaction(async (tx: any) => {
     const assetUuid = generateUuidV7();
+
+    const managingOrgType = params.managingOrgType ?? 'INTERNAL_BRANCH';
+    const managingBranchId =
+      managingOrgType === 'INTERNAL_BRANCH'
+        ? params.managingBranchId ?? params.branchId ?? null
+        : null;
+    const managingCustomerId =
+      managingOrgType === 'EXTERNAL_CONTRACTOR'
+        ? params.managingCustomerId ?? null
+        : null;
+
+    if (managingOrgType === 'INTERNAL_BRANCH' && !managingBranchId) {
+      throw new Error('ASSET_REGISTRATION_INVALID: Internal branch management requires an assigned branch or managing branch ID.');
+    }
+
+    if (managingOrgType === 'EXTERNAL_CONTRACTOR' && !managingCustomerId) {
+      throw new Error('ASSET_REGISTRATION_INVALID: External contractor management requires an assigned managing customer ID.');
+    }
 
     const asset = await tx.asset.create({
       data: {
@@ -143,10 +162,10 @@ export async function createAsset(params: {
         name: params.name,
         description: params.description ?? null,
         ownershipType: params.ownershipType ?? 'COMPANY_OWNED',
-        managingOrgType: params.managingOrgType ?? 'INTERNAL_BRANCH',
+        managingOrgType,
         ownerCustomerId: params.ownerCustomerId ?? null,
-        managingBranchId: params.managingBranchId ?? null,
-        managingCustomerId: params.managingCustomerId ?? null,
+        managingBranchId,
+        managingCustomerId,
         categoryId: params.categoryId,
         branchId: params.branchId ?? null,
         locationId: params.locationId ?? null,
@@ -159,6 +178,7 @@ export async function createAsset(params: {
         criticality: params.criticality ?? 3,
         manufacturer: params.manufacturer ?? null,
         modelNumber: params.modelNumber ?? null,
+        imageUrl: params.imageUrl ?? null,
         purchaseCost: params.purchaseCost ? new Prisma.Decimal(params.purchaseCost) : null,
       },
     });

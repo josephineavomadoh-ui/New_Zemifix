@@ -34,6 +34,69 @@ export const payloadBuilders: Record<string, PayloadBuilder> = {
       resourceType: 'work_order',
     };
   },
+  PURCHASE_REQUISITION: async (tx, entityId) => {
+    const req = await tx.purchaseRequisition.findUnique({
+      where: { id: entityId },
+      include: { items: true },
+    });
+    if (!req) throw new Error(`PURCHASE_REQUISITION_NOT_FOUND: Entity ${entityId} not found.`);
+    return {
+      payload: {
+        id: req.id,
+        requisitionNumber: req.requisitionNumber,
+        estimatedTotal: req.estimatedTotal.toString(),
+        items: req.items.map((i: any) => ({ description: i.description, quantity: i.quantity.toString(), estimatedTotal: i.estimatedTotal.toString() })),
+      },
+      version: 1,
+      amount: req.estimatedTotal,
+      branchId: req.branchId,
+      departmentId: req.departmentId,
+      resourceType: 'purchase_requisition',
+    };
+  },
+  PURCHASE_ORDER: async (tx, entityId) => {
+    const po = await tx.purchaseOrder.findUnique({
+      where: { id: entityId },
+      include: { items: true },
+    });
+    if (!po) throw new Error(`PURCHASE_ORDER_NOT_FOUND: Entity ${entityId} not found.`);
+    return {
+      payload: {
+        id: po.id,
+        poNumber: po.poNumber,
+        vendorId: po.vendorId,
+        subtotal: po.subtotal.toString(),
+        totalAmount: po.totalAmount.toString(),
+        items: po.items.map((i: any) => ({ description: i.description, quantityOrdered: i.quantityOrdered.toString(), lineTotal: i.lineTotal.toString() })),
+      },
+      version: 1,
+      amount: po.totalAmount,
+      branchId: po.branchId,
+      departmentId: po.departmentId,
+      resourceType: 'purchase_order',
+    };
+  },
+  GOODS_RECEIVED_NOTE: async (tx, entityId) => {
+    const grn = await tx.goodsReceivedNote.findUnique({
+      where: { id: entityId },
+      include: { po: true, items: true },
+    });
+    if (!grn) throw new Error(`GOODS_RECEIVED_NOTE_NOT_FOUND: Entity ${entityId} not found.`);
+    return {
+      payload: {
+        id: grn.id,
+        grnNumber: grn.grnNumber,
+        poId: grn.poId,
+        storeId: grn.storeId,
+        items: grn.items.map((i: any) => ({ poItemId: i.poItemId, quantityAccepted: i.quantityAccepted.toString(), unitCost: i.unitCost.toString() })),
+      },
+      version: 1,
+      amount: grn.po.totalAmount,
+      branchId: grn.po.branchId,
+      departmentId: grn.po.departmentId,
+      resourceType: 'goods_received_note',
+    };
+  },
 };
 
 // Entity-Specific Business Transition Registry
@@ -46,6 +109,27 @@ export type BusinessTransitionHandler = (
 export const transitionRegistry: Record<string, BusinessTransitionHandler> = {
   TEST_ENTITY: async (tx, entityId, approvedAmount) => {
     return { updatedCount: 1 };
+  },
+  PURCHASE_REQUISITION: async (tx, entityId) => {
+    const res = await tx.purchaseRequisition.updateMany({
+      where: { id: entityId },
+      data: { status: 'APPROVED' },
+    });
+    return { updatedCount: res.count };
+  },
+  PURCHASE_ORDER: async (tx, entityId) => {
+    const res = await tx.purchaseOrder.updateMany({
+      where: { id: entityId },
+      data: { status: 'APPROVED' },
+    });
+    return { updatedCount: res.count };
+  },
+  GOODS_RECEIVED_NOTE: async (tx, entityId) => {
+    const res = await tx.goodsReceivedNote.updateMany({
+      where: { id: entityId },
+      data: { status: 'ACCEPTED' },
+    });
+    return { updatedCount: res.count };
   },
 };
 

@@ -51,6 +51,7 @@ describe('PostgreSQL Row-Level Security (RLS) Policies & Isolation (Sub-stage 2.
         data: {
           workOrderNumber: `WO-RLS-TEST-${Date.now()}`,
           title: 'RLS Branch B Test Work Order',
+          description: 'RLS Branch B Test Work Order Description',
           type: 'CORRECTIVE',
           priority: 'MEDIUM',
           status: 'OPEN',
@@ -82,6 +83,7 @@ describe('PostgreSQL Row-Level Security (RLS) Policies & Isolation (Sub-stage 2.
         data: {
           workOrderNumber: `WO-CUST-RLS-${Date.now()}`,
           title: 'RLS Customer A Test Work Order',
+          description: 'RLS Customer A Test Work Order Description',
           type: 'CORRECTIVE',
           priority: 'MEDIUM',
           status: 'OPEN',
