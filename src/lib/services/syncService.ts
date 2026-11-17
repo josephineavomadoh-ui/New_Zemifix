@@ -9,7 +9,7 @@ import { submitMeterReading, logDowntimeStart } from './telemetryService';
 
 export interface QueuedMutationItem {
   idempotencyKey: string;
-  actionType: string; // WORK_ORDER_STATUS_SHIFT | CHECKLIST_UPDATE | LABOR_LOG | MATERIAL_ISSUE_REQUEST | METER_READING | DOWNTIME_START
+  actionType: string; // WORK_ORDER_STATUS_SHIFT | CHECKLIST_UPDATE | LABOR_LOG | MATERIAL_ISSUE_REQUEST | METER_READING | DOWNTIME_START | WORK_ORDER_NOTE
   entityType: string; // work_order | checklist_item | labor | part | meter | asset
   entityId: string;
   payload: any;
@@ -246,7 +246,7 @@ export async function processSyncBatch(
  */
 async function executeSingleOfflineMutation(tx: any, user: AuthenticatedUser, item: QueuedMutationItem) {
   // 1. Revalidate Work Order Access Scope if mutation targets a Work Order
-  if (['work_order', 'labor', 'part', 'checklist_item'].includes(item.entityType)) {
+  if (['work_order', 'labor', 'part', 'checklist_item', 'work_order_comment'].includes(item.entityType)) {
     const scopeFilter = await getScopedWorkOrderFilter(user);
     const woId = item.payload.workOrderId ?? item.entityId;
 
@@ -332,6 +332,17 @@ async function executeSingleOfflineMutation(tx: any, user: AuthenticatedUser, it
       reason: item.payload.reason ?? 'Logged via Technician PWA',
       startedAt: item.payload.startedAt ? new Date(item.payload.startedAt) : new Date(),
       loggedByUserId: user.id,
+    });
+  }
+
+  if (item.actionType === 'WORK_ORDER_NOTE') {
+    return await tx.workOrderComment.create({
+      data: {
+        workOrderId: item.payload.workOrderId ?? item.entityId,
+        authorUserId: user.id,
+        commentText: item.payload.body,
+        isCustomerVisible: false,
+      },
     });
   }
 
