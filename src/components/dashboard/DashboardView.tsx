@@ -151,7 +151,8 @@ export const DashboardView: React.FC = () => {
     void fetchStats();
   }, [fetchStats]);
 
-  const today = new Intl.DateTimeFormat(undefined, {
+  const today = new Intl.DateTimeFormat('en-GH', {
+    timeZone: 'Africa/Accra',
     weekday: 'long',
     day: 'numeric',
     month: 'long',
@@ -474,7 +475,7 @@ export const DashboardView: React.FC = () => {
                           </td>
                           <td className="py-3 pr-3 text-slate-600">{order.priority.replaceAll('_', ' ')}</td>
                           <td className="py-3 pr-3"><StatusBadge value={order.status} /></td>
-                          <td className="whitespace-nowrap py-3 text-slate-500">{new Date(order.createdAt).toLocaleDateString()}</td>
+                          <td className="whitespace-nowrap py-3 text-slate-500">{new Date(order.createdAt).toLocaleDateString('en-GH', { timeZone: 'Africa/Accra' })}</td>
                         </tr>
                       ))}
                     </tbody>

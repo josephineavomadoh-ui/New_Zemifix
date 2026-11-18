@@ -9,6 +9,7 @@ const envSchema = z.object({
   APPROVAL_SECRET: z.string().min(32, 'APPROVAL_SECRET must be at least 32 characters long'),
   WORKER_SECRET: z.string().min(32, 'WORKER_SECRET must be at least 32 characters long'),
   NEXT_PUBLIC_APP_URL: z.string().url().default('http://localhost:3000'),
+  ADDITIONAL_TRUSTED_ORIGINS: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),
   OTP_FROM_EMAIL: z.string().email().optional(),
 });

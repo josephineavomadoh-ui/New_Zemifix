@@ -84,7 +84,7 @@ function staleWhileRevalidate(request) {
     return cache.match(request).then((cachedResponse) => {
       const networkFetch = fetch(request)
         .then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
+          if (networkResponse && networkResponse.status === 200 && request.method === 'GET') {
             cache.put(request, networkResponse.clone());
           }
           return networkResponse;

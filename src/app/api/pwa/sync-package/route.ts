@@ -25,7 +25,21 @@ export async function GET(req: NextRequest) {
         prisma.workOrder.findUnique({
           where: { id: wo.id },
           include: {
-            asset: { select: { id: true, name: true, assetTag: true, status: true, modelNumber: true, serialNumber: true, imageUrl: true } },
+            asset: {
+              select: {
+                id: true,
+                name: true,
+                assetTag: true,
+                status: true,
+                modelNumber: true,
+                serialNumber: true,
+                manufacturer: true,
+                imageUrl: true,
+                category: { select: { name: true } },
+                location: { select: { name: true } },
+                branch: { select: { name: true } },
+              },
+            },
             location: { select: { id: true, name: true, code: true, building: true, room: true } },
             branch: { select: { id: true, name: true, code: true } },
             department: { select: { id: true, name: true, code: true } },
@@ -38,6 +52,7 @@ export async function GET(req: NextRequest) {
             statusHistory: { include: { changedByUser: { select: { name: true } } }, orderBy: { changedAt: 'desc' } },
             assignmentHistory: { include: { assignedUser: { select: { name: true } }, assignedByUser: { select: { name: true } } }, orderBy: { assignedAt: 'desc' } },
             sourceWorkRequests: true,
+            attachments: { orderBy: { createdAt: 'desc' } },
           },
         })
       )

@@ -60,6 +60,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         where: { id },
         data: {
           name: body.name,
+          assetTag: body.assetTag,
+          isActive: body.isActive,
           description: body.description,
           criticality: body.criticality,
           manufacturer: body.manufacturer,

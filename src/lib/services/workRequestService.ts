@@ -290,3 +290,141 @@ export async function reviewWorkRequest(
     throw new Error('INVALID_ACTION: Unsupported review action.');
   });
 }
+
+/**
+ * Fetches Public Intake QR submissions for authorized Planner review
+ */
+export async function getPublicRequestIntakes(user: AuthenticatedUser) {
+  return await prisma.publicRequestIntake.findMany({
+    include: {
+      site: { select: { id: true, name: true, siteCode: true } },
+      branch: { select: { id: true, name: true, code: true } },
+      asset: { select: { id: true, name: true, assetTag: true, branchId: true } },
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+/**
+ * Reviews and converts a Public Intake QR request into a Work Order or marks as SPAM / REJECTED
+ */
+export async function processPublicRequestIntake(
+  user: AuthenticatedUser,
+  params: {
+    intakeId: string;
+    action: 'CONVERT' | 'REJECT' | 'MARK_SPAM';
+    rejectionReason?: string;
+    priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT' | 'EMERGENCY';
+  }
+) {
+  return await prisma.$transaction(async (tx: any) => {
+    const intake = await tx.publicRequestIntake.findUnique({
+      where: { id: params.intakeId },
+      include: {
+        site: { select: { id: true, name: true, siteCode: true } },
+        branch: { select: { id: true, name: true, code: true } },
+        asset: { select: { id: true, name: true, assetTag: true, branchId: true } },
+      },
+    });
+
+    if (!intake) {
+      throw new Error('INTAKE_NOT_FOUND: Public QR intake request does not exist.');
+    }
+
+    if (intake.status === 'PROCESSED' || intake.status === 'SPAM' || intake.status === 'REJECTED') {
+      throw new Error('FINALIZED_INTAKE: Public intake request is already processed or finalized.');
+    }
+
+    if (params.action === 'MARK_SPAM' || params.action === 'REJECT') {
+      const updatedStatus = params.action === 'MARK_SPAM' ? 'SPAM' : 'REJECTED';
+      const updated = await tx.publicRequestIntake.update({
+        where: { id: intake.id },
+        data: { status: updatedStatus },
+      });
+
+      await appendAuditLog(tx, {
+        actorUserId: user.id,
+        action: 'PROCESSED_PUBLIC_QR_INTAKE',
+        resource: 'public_request_intake',
+        resourceId: intake.id,
+        payload: { action: params.action, rejectionReason: params.rejectionReason },
+      });
+
+      return { intake: updated, workOrder: null };
+    }
+
+    if (params.action === 'CONVERT') {
+      const ts = Date.now();
+      const woNumber = `WO-${new Date().getFullYear()}-${ts.toString().slice(-6)}`;
+      const woId = generateUuidV7();
+
+      let branchId = user.branchId;
+      if (intake.branchId) {
+        branchId = intake.branchId;
+      } else if (intake.asset?.branchId) {
+        branchId = intake.asset.branchId;
+      }
+
+      const titleTargetName = intake.asset ? intake.asset.name : (intake.site?.name || intake.branch?.name || 'Facility');
+      const title = `QR Request: ${titleTargetName} — ${intake.description.slice(0, 40)}`;
+
+      const wo = await tx.workOrder.create({
+        data: {
+          id: woId,
+          workOrderNumber: woNumber,
+          title,
+          description: `Public QR Fault Report by ${intake.requesterName} (${intake.requesterPhone} / ${intake.requesterEmail}):\n${intake.description}`,
+          type: 'CORRECTIVE',
+          priority: params.priority ?? 'HIGH',
+          status: 'OPEN',
+          siteId: intake.siteId ?? null,
+          assetId: intake.assetId,
+          branchId,
+          supervisorUserId: user.id,
+        },
+      });
+
+      // Attach public photo to work order attachments if photoUrl exists
+      if (intake.photoUrl) {
+        await tx.workOrderAttachment.create({
+          data: {
+            id: generateUuidV7(),
+            workOrderId: wo.id,
+            uploaderUserId: user.id,
+            fileName: `[BEFORE] Public Fault Photo`,
+            fileUrl: intake.photoUrl,
+            fileSize: 1024,
+            mimeType: 'image/jpeg',
+            isCustomerVisible: true,
+          },
+        });
+      }
+
+      const updatedIntake = await tx.publicRequestIntake.update({
+        where: { id: intake.id },
+        data: {
+          status: 'PROCESSED',
+          processedRequestId: wo.id,
+        },
+      });
+
+      const statusHistUuid = generateUuidV7();
+      await tx.$executeRaw`
+        INSERT INTO "work_order_status_history" ("id", "workOrderId", "fromStatus", "toStatus", "changedByUserId", "reason", "changedAt")
+        VALUES (${statusHistUuid}::uuid, ${wo.id}::uuid, 'DRAFT'::"WorkOrderStatus", 'OPEN'::"WorkOrderStatus", ${user.id}::uuid, 'Converted from Public QR Intake', NOW())
+      `;
+
+      await appendAuditLog(tx, {
+        actorUserId: user.id,
+        action: 'CONVERTED_PUBLIC_QR_INTAKE_TO_WORK_ORDER',
+        resource: 'public_request_intake',
+        resourceId: intake.id,
+        payload: { workOrderNumber: woNumber, workOrderId: wo.id },
+      });
+
+      return { intake: updatedIntake, workOrder: wo };
+    }
+
+    throw new Error('INVALID_ACTION: Unsupported review action.');
+  });
+}

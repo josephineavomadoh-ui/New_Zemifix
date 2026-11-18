@@ -23,9 +23,14 @@ import {
   Image as ImageIcon,
   Trash2,
   Upload,
+  Building2,
+  Layers,
+  ShieldCheck,
 } from 'lucide-react';
 import { WorkOrderStatusBadge } from '@/src/components/work-orders/WorkOrderStatusBadge';
 import { WorkOrderPriorityBadge } from '@/src/components/work-orders/WorkOrderPriorityBadge';
+import { AssetThumbnail } from '@/src/components/assets/AssetThumbnail';
+import { AssetStatusBadge } from '@/src/components/assets/AssetStatusBadge';
 import { useOnlineStatus } from '@/src/lib/pwa/useOnlineStatus';
 import {
   enqueueOfflineMutation,
@@ -73,7 +78,7 @@ export default function PwaWorkOrderWorkspacePage({ params }: { params: Promise<
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [photoCaption, setPhotoCaption] = useState('');
-  const [evidenceType, setEvidenceType] = useState<'BEFORE' | 'AFTER' | 'GENERAL'>('GENERAL');
+  const [evidenceType, setEvidenceType] = useState<'BEFORE' | 'DURING' | 'AFTER' | 'GENERAL'>('BEFORE');
   const [photoSubmitting, setPhotoSubmitting] = useState(false);
   const [photoBanner, setPhotoBanner] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [queuedPhotos, setQueuedPhotos] = useState<PendingPhoto[]>([]);
@@ -563,6 +568,36 @@ export default function PwaWorkOrderWorkspacePage({ params }: { params: Promise<
   }
 
   const meters: any[] = wo.asset?.meters ?? [];
+  const allAttachments: any[] = wo.attachments ?? [];
+
+  // Categorize attachments
+  const reportedFaultPhotos = allAttachments.filter(
+    (att: any) =>
+      att.fileName?.includes('[BEFORE]') &&
+      (att.fileName?.includes('Public Fault Photo') || att.fileName?.includes('Fault') || att.fileName?.includes('QR'))
+  );
+
+  const maintenanceBeforePhotos = allAttachments.filter(
+    (att: any) =>
+      att.fileName?.includes('[BEFORE]') &&
+      !reportedFaultPhotos.includes(att)
+  );
+
+  const maintenanceDuringPhotos = allAttachments.filter(
+    (att: any) => att.fileName?.includes('[DURING]')
+  );
+
+  const maintenanceAfterPhotos = allAttachments.filter(
+    (att: any) => att.fileName?.includes('[AFTER]')
+  );
+
+  const maintenanceGeneralPhotos = allAttachments.filter(
+    (att: any) =>
+      !reportedFaultPhotos.includes(att) &&
+      !maintenanceBeforePhotos.includes(att) &&
+      !maintenanceDuringPhotos.includes(att) &&
+      !maintenanceAfterPhotos.includes(att)
+  );
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] max-w-lg mx-auto pb-28">
@@ -594,36 +629,98 @@ export default function PwaWorkOrderWorkspacePage({ params }: { params: Promise<
           )}
         </div>
 
-        {/* ── Asset panel ── */}
-        <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-2 shadow-sm">
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-[#0B1336]">Asset / Location</h2>
+        {/* ── 1. Asset Information Section ── */}
+        <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 shadow-sm">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-[#0B1336] flex items-center gap-1.5">
+            <Wrench className="w-3.5 h-3.5 text-[#FF5B00]" /> Asset Information
+          </h2>
           {wo.asset ? (
-            <div className="space-y-1 text-sm">
-              <div className="flex items-center gap-2 text-slate-700">
-                <Wrench className="w-3.5 h-3.5 text-[#FF5B00] shrink-0" />
-                <span className="font-medium">{wo.asset.name}</span>
+            <div className="space-y-3">
+              <div className="flex items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                <div className="h-16 w-16 overflow-hidden rounded-lg border border-slate-200 bg-white flex items-center justify-center shrink-0">
+                  <AssetThumbnail assetId={wo.asset.id} imageUrl={wo.asset.imageUrl} assetName={wo.asset.name} size="sm" />
+                </div>
+                <div className="min-w-0 space-y-1">
+                  <h3 className="font-bold text-sm text-slate-900 truncate">{wo.asset.name}</h3>
+                  <p className="font-mono text-xs text-slate-500">{wo.asset.assetTag}</p>
+                  <AssetStatusBadge status={wo.asset.status} />
+                </div>
               </div>
-              {wo.asset.tag && (
-                <div className="flex items-center gap-2 text-slate-500 text-xs">
-                  <Tag className="w-3 h-3 shrink-0" />
-                  <span>{wo.asset.tag}</span>
+
+              <dl className="grid grid-cols-2 gap-3 text-xs pt-1 border-t border-slate-100">
+                <div>
+                  <dt className="text-slate-400 font-medium">Category</dt>
+                  <dd className="font-semibold text-slate-800 mt-0.5">{wo.asset.category?.name ?? 'Equipment'}</dd>
                 </div>
-              )}
-              {wo.asset.location?.name && (
-                <div className="flex items-center gap-2 text-slate-500 text-xs">
-                  <MapPin className="w-3 h-3 shrink-0" />
-                  <span>{wo.asset.location.name}</span>
+                <div>
+                  <dt className="text-slate-400 font-medium">Location / Branch</dt>
+                  <dd className="font-semibold text-slate-800 mt-0.5">
+                    {wo.asset.location?.name ?? wo.location?.name ?? wo.asset.branch?.name ?? wo.branch?.name ?? 'Assigned Facility'}
+                  </dd>
                 </div>
-              )}
-            </div>
-          ) : wo.location ? (
-            <div className="flex items-center gap-2 text-sm text-slate-700">
-              <MapPin className="w-3.5 h-3.5 text-[#FF5B00] shrink-0" />
-              <span>{wo.location.name}</span>
+                <div>
+                  <dt className="text-slate-400 font-medium">Manufacturer</dt>
+                  <dd className="font-semibold text-slate-800 mt-0.5">{wo.asset.manufacturer ?? 'N/A'}</dd>
+                </div>
+                <div>
+                  <dt className="text-slate-400 font-medium">Model / Serial #</dt>
+                  <dd className="font-semibold text-slate-800 mt-0.5">
+                    {wo.asset.modelNumber ? `${wo.asset.modelNumber} / ` : ''}{wo.asset.serialNumber ?? 'N/A'}
+                  </dd>
+                </div>
+              </dl>
             </div>
           ) : (
-            <p className="text-xs text-slate-400">No asset or location attached.</p>
+            <div className="flex items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+              <div className="h-14 w-14 rounded-lg bg-slate-200 flex items-center justify-center text-slate-400 shrink-0">
+                <Layers className="w-6 h-6" />
+              </div>
+              <div>
+                <p className="text-xs font-bold text-slate-800">{wo.location?.name ?? 'General Facility Work Order'}</p>
+                <p className="text-[11px] text-slate-400 mt-0.5">No specific equipment asset attached.</p>
+              </div>
+            </div>
           )}
+        </div>
+
+        {/* ── 2. Reported Problem Section ── */}
+        <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 shadow-sm">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-[#0B1336] flex items-center gap-1.5">
+            <StickyNote className="w-3.5 h-3.5 text-[#FF5B00]" /> Reported Problem & Initial Fault
+          </h2>
+          <div className="space-y-2 text-xs">
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span>Reported Date: {formatTs(wo.createdAt)}</span>
+                <span className="font-bold text-[#FF5B00]">QR / Portal Intake</span>
+              </div>
+              <p className="text-slate-700 leading-relaxed">{wo.description}</p>
+            </div>
+
+            {/* Reported Fault Photos – Before Maintenance */}
+            <div className="space-y-2 pt-1">
+              <h3 className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                Reported Fault Photos – Before Maintenance
+              </h3>
+              {reportedFaultPhotos.length === 0 ? (
+                <p className="text-xs text-slate-400 italic">No original fault photographs attached by customer or reporter.</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {reportedFaultPhotos.map((att: any) => (
+                    <div key={att.id} className="border border-slate-200 rounded-xl p-2 bg-slate-50 space-y-1.5 shadow-2xs">
+                      <div className="h-32 w-full overflow-hidden rounded-lg bg-white border border-slate-200 flex items-center justify-center">
+                        <img src={`/api/public/uploads/${att.fileUrl.replace('work-orders/', '')}`} alt={att.fileName} className="w-full h-full object-cover" onError={(e)=>{ (e.target as any).src = `/storage/${att.fileUrl}`; }} />
+                      </div>
+                      <p className="text-[11px] font-semibold text-slate-800 truncate">{att.fileName}</p>
+                      <span className="inline-block bg-amber-50 text-amber-800 text-[9px] font-bold px-1.5 py-0.5 rounded">
+                        Reported Fault
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* ── Status transitions ── */}
@@ -688,61 +785,105 @@ export default function PwaWorkOrderWorkspacePage({ params }: { params: Promise<
           </div>
         </div>
 
-        {/* ── Photo Capture & Attachments Card ── */}
+        {/* ── 3. Technician Maintenance Photographs ("Maintenance Photos") ── */}
         <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-4 shadow-sm">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-[#0B1336] flex items-center gap-1.5">
-              <Camera className="w-3.5 h-3.5 text-[#FF5B00]" /> Photo Evidence & Attachments
+              <Camera className="w-3.5 h-3.5 text-[#FF5B00]" /> Maintenance Photos
             </h2>
             <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
-              {(wo.attachments?.length ?? 0) + queuedPhotos.length} File(s)
+              {maintenanceBeforePhotos.length + maintenanceDuringPhotos.length + maintenanceAfterPhotos.length + maintenanceGeneralPhotos.length + queuedPhotos.length} Photo(s)
             </span>
           </div>
 
-          {/* Uploaded server attachments */}
-          {wo.attachments && wo.attachments.length > 0 && (
+          {/* Categorized display of maintenance photos */}
+          <div className="space-y-4 text-xs">
+            {/* Before Maintenance */}
             <div className="space-y-2">
-              <h3 className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">Uploaded Attachments</h3>
-              <div className="grid grid-cols-2 gap-2">
-                {wo.attachments.map((att: any) => (
-                  <div key={att.id} className="border border-slate-100 rounded-lg p-2 bg-slate-50 text-xs space-y-1">
-                    <p className="font-semibold text-slate-800 truncate">{att.fileName}</p>
-                    <div className="flex items-center justify-between text-[10px] text-slate-400">
-                      <span>{(att.fileSize / 1024).toFixed(1)} KB</span>
-                      <span className="text-emerald-600 font-bold">Uploaded</span>
+              <h3 className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">Before Maintenance</h3>
+              {maintenanceBeforePhotos.length === 0 ? (
+                <p className="text-[11px] text-slate-400 italic">No Before photos uploaded yet.</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {maintenanceBeforePhotos.map((att: any) => (
+                    <div key={att.id} className="border border-slate-200 rounded-xl p-2 bg-slate-50 space-y-1">
+                      <div className="h-28 w-full overflow-hidden rounded-lg bg-white border border-slate-200 flex items-center justify-center">
+                        <img src={`/storage/${att.fileUrl}`} alt={att.fileName} className="w-full h-full object-cover" />
+                      </div>
+                      <p className="text-[11px] font-semibold text-slate-800 truncate">{att.fileName}</p>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
 
-          {/* Queued offline pending photos */}
-          {queuedPhotos.length > 0 && (
+            {/* During Maintenance */}
             <div className="space-y-2">
-              <h3 className="text-[11px] font-bold text-amber-600 uppercase tracking-wider flex items-center gap-1">
-                <RefreshCw className="w-3 h-3 animate-spin" /> Pending Offline Uploads
-              </h3>
-              <div className="space-y-2">
-                {queuedPhotos.map((p) => (
-                  <div key={p.localId} className="border border-amber-200 bg-amber-50/60 rounded-lg p-2.5 text-xs flex items-center justify-between">
-                    <div>
-                      <p className="font-semibold text-amber-900 truncate">{p.fileName}</p>
-                      <p className="text-[10px] text-amber-700">
-                        {p.caption ? `Caption: ${p.caption}` : `Type: ${p.evidenceType ?? 'GENERAL'}`}
-                      </p>
+              <h3 className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">During Maintenance</h3>
+              {maintenanceDuringPhotos.length === 0 ? (
+                <p className="text-[11px] text-slate-400 italic">No During photos uploaded yet.</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {maintenanceDuringPhotos.map((att: any) => (
+                    <div key={att.id} className="border border-slate-200 rounded-xl p-2 bg-slate-50 space-y-1">
+                      <div className="h-28 w-full overflow-hidden rounded-lg bg-white border border-slate-200 flex items-center justify-center">
+                        <img src={`/storage/${att.fileUrl}`} alt={att.fileName} className="w-full h-full object-cover" />
+                      </div>
+                      <p className="text-[11px] font-semibold text-slate-800 truncate">{att.fileName}</p>
                     </div>
-                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${p.uploadStatus === 'FAILED' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'}`}>
-                      {p.uploadStatus}
-                    </span>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
 
-          {/* Photo Capture Form */}
-          <div className="space-y-3 pt-2 border-t border-slate-100">
+            {/* After Maintenance */}
+            <div className="space-y-2">
+              <h3 className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">After Maintenance</h3>
+              {maintenanceAfterPhotos.length === 0 ? (
+                <p className="text-[11px] text-slate-400 italic">No After photos uploaded yet.</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {maintenanceAfterPhotos.map((att: any) => (
+                    <div key={att.id} className="border border-slate-200 rounded-xl p-2 bg-slate-50 space-y-1">
+                      <div className="h-28 w-full overflow-hidden rounded-lg bg-white border border-slate-200 flex items-center justify-center">
+                        <img src={`/storage/${att.fileUrl}`} alt={att.fileName} className="w-full h-full object-cover" />
+                      </div>
+                      <p className="text-[11px] font-semibold text-slate-800 truncate">{att.fileName}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Pending Offline Photos */}
+            {queuedPhotos.length > 0 && (
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                <h3 className="text-[11px] font-bold text-amber-600 uppercase tracking-wider flex items-center gap-1">
+                  <RefreshCw className="w-3 h-3 animate-spin" /> Pending Offline Photos
+                </h3>
+                <div className="space-y-2">
+                  {queuedPhotos.map((p) => (
+                    <div key={p.localId} className="border border-amber-200 bg-amber-50/60 rounded-lg p-2.5 text-xs flex items-center justify-between">
+                      <div>
+                        <p className="font-semibold text-amber-900 truncate">{p.fileName}</p>
+                        <p className="text-[10px] text-amber-700">Stage: {p.evidenceType ?? 'GENERAL'} {p.caption ? `— ${p.caption}` : ''}</p>
+                      </div>
+                      <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${p.uploadStatus === 'FAILED' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'}`}>
+                        {p.uploadStatus}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Photo Capture & Upload Form */}
+          <div className="space-y-3 pt-3 border-t border-slate-100">
+            <h3 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+              <Camera className="w-3.5 h-3.5 text-[#FF5B00]" /> Capture Maintenance Photograph
+            </h3>
+
             {photoBanner && (
               <div
                 className={`text-xs rounded-lg px-3 py-2 ${
@@ -757,10 +898,9 @@ export default function PwaWorkOrderWorkspacePage({ params }: { params: Promise<
               </div>
             )}
 
-            {/* Dual selection options: Camera vs Gallery */}
             {!photoFile ? (
               <div className="grid grid-cols-2 gap-2">
-                <label className="flex flex-col items-center justify-center gap-1.5 border-2 border-dashed border-slate-200 rounded-xl py-5 text-xs text-slate-600 cursor-pointer hover:border-[#FF5B00] transition-colors bg-slate-50/50">
+                <label className="flex flex-col items-center justify-center gap-1.5 border-2 border-dashed border-slate-200 rounded-xl py-4 text-xs text-slate-600 cursor-pointer hover:border-[#FF5B00] transition-colors bg-slate-50/50">
                   <Camera className="w-5 h-5 text-[#FF5B00]" />
                   <span className="font-semibold">Take Photo</span>
                   <input
@@ -772,7 +912,7 @@ export default function PwaWorkOrderWorkspacePage({ params }: { params: Promise<
                   />
                 </label>
 
-                <label className="flex flex-col items-center justify-center gap-1.5 border-2 border-dashed border-slate-200 rounded-xl py-5 text-xs text-slate-600 cursor-pointer hover:border-[#FF5B00] transition-colors bg-slate-50/50">
+                <label className="flex flex-col items-center justify-center gap-1.5 border-2 border-dashed border-slate-200 rounded-xl py-4 text-xs text-slate-600 cursor-pointer hover:border-[#FF5B00] transition-colors bg-slate-50/50">
                   <ImageIcon className="w-5 h-5 text-indigo-500" />
                   <span className="font-semibold">Select Gallery</span>
                   <input
@@ -790,7 +930,7 @@ export default function PwaWorkOrderWorkspacePage({ params }: { params: Promise<
                     <img
                       src={photoPreview}
                       alt="Selected preview"
-                      className="w-full rounded-lg border border-slate-200 max-h-52 object-cover"
+                      className="w-full rounded-lg border border-slate-200 max-h-48 object-cover"
                     />
                   )}
                   <button
@@ -802,33 +942,34 @@ export default function PwaWorkOrderWorkspacePage({ params }: { params: Promise<
                   </button>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="col-span-1">
-                    <label className="block text-[10px] font-bold text-slate-600 mb-1">Evidence Stage</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-1">Stage *</label>
                     <select
                       value={evidenceType}
                       onChange={(e) => setEvidenceType(e.target.value as any)}
-                      className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs text-slate-800 bg-white focus:outline-none focus:border-[#FF5B00]"
+                      className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-xs text-slate-800 bg-white focus:outline-none focus:border-[#FF5B00]"
                     >
-                      <option value="BEFORE">Before Repair</option>
-                      <option value="AFTER">After Repair</option>
-                      <option value="GENERAL">General Condition</option>
+                      <option value="BEFORE">Before Maintenance</option>
+                      <option value="DURING">During Maintenance</option>
+                      <option value="AFTER">After Maintenance</option>
+                      <option value="GENERAL">General Evidence</option>
                     </select>
                   </div>
 
-                  <div className="col-span-2">
-                    <label className="block text-[10px] font-bold text-slate-600 mb-1">Photo Description / Caption</label>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 mb-1">Caption / Description</label>
                     <input
                       type="text"
                       value={photoCaption}
                       onChange={(e) => setPhotoCaption(e.target.value)}
-                      placeholder="e.g. Cracked pump housing seal"
-                      className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-[#FF5B00] bg-white"
+                      placeholder="e.g. Replaced worn belt"
+                      className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-xs text-slate-800 focus:outline-none focus:border-[#FF5B00] bg-white"
                     />
                   </div>
                 </div>
 
-                <div className="flex gap-2">
+                <div className="flex gap-2 pt-1">
                   <button
                     type="button"
                     onClick={handleRemoveSelectedPhoto}

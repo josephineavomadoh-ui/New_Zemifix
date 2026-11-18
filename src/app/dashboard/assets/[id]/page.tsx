@@ -2,7 +2,24 @@
 
 import React, { useEffect, useState, use } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, Layers, AlertTriangle, Activity, Camera, Trash2, Upload } from 'lucide-react';
+import QRCode from 'qrcode';
+import {
+  ArrowLeft,
+  Layers,
+  AlertTriangle,
+  Activity,
+  Camera,
+  Trash2,
+  Upload,
+  QrCode,
+  Download,
+  Printer,
+  Copy,
+  Check,
+  RefreshCw,
+  ShieldCheck,
+  Building,
+} from 'lucide-react';
 import { AssetStatusBadge } from '@/src/components/assets/AssetStatusBadge';
 import { AssetThumbnail } from '@/src/components/assets/AssetThumbnail';
 import { MeterReadingModal } from '@/src/components/assets/MeterReadingModal';
@@ -15,7 +32,7 @@ export default function AssetDetailPage({ params }: { params: Promise<{ id: stri
   const { id } = use(params);
   const [asset, setAsset] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [activeTab, setActiveTab] = useState<'overview' | 'telemetry' | 'downtime' | 'maintenance' | 'history'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'qr' | 'telemetry' | 'downtime' | 'maintenance' | 'history'>('overview');
 
   const [selectedMeter, setSelectedMeter] = useState<any>(null);
   const [isReadingModalOpen, setIsReadingModalOpen] = useState<boolean>(false);
@@ -23,12 +40,22 @@ export default function AssetDetailPage({ params }: { params: Promise<{ id: stri
   const [imageActionLoading, setImageActionLoading] = useState<boolean>(false);
   const [imageError, setImageError] = useState<string | null>(null);
 
+  // QR state
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [copied, setCopied] = useState<boolean>(false);
+  const [newAssetTag, setNewAssetTag] = useState<string>('');
+  const [updatingQr, setUpdatingQr] = useState<boolean>(false);
+  const [qrMessage, setQrMessage] = useState<string | null>(null);
+
   const fetchAssetDetail = async () => {
     setLoading(true);
     try {
       const res = await fetch(`/api/assets/${id}`);
       const data = await res.json();
-      if (res.ok) setAsset(data.asset);
+      if (res.ok) {
+        setAsset(data.asset);
+        setNewAssetTag(data.asset.assetTag);
+      }
     } catch (err) {
       console.error('Failed to fetch asset detail', err);
     } finally {
@@ -39,6 +66,95 @@ export default function AssetDetailPage({ params }: { params: Promise<{ id: stri
   useEffect(() => {
     fetchAssetDetail();
   }, [id]);
+
+  // Generate QR code data URL whenever assetTag changes
+  useEffect(() => {
+    if (asset?.assetTag) {
+      const publicUrl = `${window.location.origin}/request/qr?assetTag=${encodeURIComponent(asset.assetTag)}`;
+      QRCode.toDataURL(publicUrl, { width: 280, margin: 2, color: { dark: '#080E29', light: '#ffffff' } })
+        .then(setQrDataUrl)
+        .catch(console.error);
+    }
+  }, [asset?.assetTag]);
+
+  const handleCopyLink = () => {
+    if (!asset?.assetTag) return;
+    const publicUrl = `${window.location.origin}/request/qr?assetTag=${encodeURIComponent(asset.assetTag)}`;
+    navigator.clipboard.writeText(publicUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownloadQr = () => {
+    if (!qrDataUrl) return;
+    const link = document.createElement('a');
+    link.href = qrDataUrl;
+    link.download = `QR-${asset.assetTag}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handlePrintLabel = () => {
+    if (!qrDataUrl || !asset) return;
+    const printWindow = window.open('', '_blank', 'width=650,height=650');
+    if (!printWindow) return;
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>ZemiFix QR Label - ${asset.assetTag}</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 20px; color: #080E29; background: #fff; }
+            .label-box { border: 2px dashed #080E29; border-radius: 12px; padding: 24px; max-width: 320px; margin: 0 auto; background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+            .brand { font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: #FF5B00; margin-bottom: 6px; }
+            .name { font-size: 16px; font-weight: bold; margin-bottom: 6px; color: #080E29; }
+            .tag { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 14px; font-weight: 600; background: #f1f5f9; padding: 4px 10px; border-radius: 6px; display: inline-block; margin-bottom: 8px; color: #334155; }
+            .location { font-size: 12px; color: #64748b; margin-bottom: 14px; font-weight: 500; }
+            .qr { margin: 10px 0; }
+            .qr img { width: 170px; height: 170px; }
+            .instruction { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: #FF5B00; margin-top: 10px; }
+          </style>
+        </head>
+        <body>
+          <div class="label-box">
+            <div class="brand">ZemiFix CMMS</div>
+            <div class="name">${asset.name}</div>
+            <div class="tag">${asset.assetTag}</div>
+            <div class="location">${asset.location?.name ?? asset.site?.name ?? 'Assigned Facility'}</div>
+            <div class="qr"><img src="${qrDataUrl}" /></div>
+            <div class="instruction">Scan to Report a Maintenance Issue</div>
+          </div>
+          <script>
+            window.onload = function() { window.print(); window.close(); }
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
+  const handleUpdateQrSettings = async (updates: { assetTag?: string; isActive?: boolean }) => {
+    setUpdatingQr(true);
+    setQrMessage(null);
+    try {
+      const res = await fetch(`/api/assets/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...asset,
+          ...updates,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update QR settings');
+      setAsset(data.asset);
+      setQrMessage('QR settings updated successfully.');
+    } catch (err: any) {
+      setQrMessage(err.message ?? 'Failed to update QR settings');
+    } finally {
+      setUpdatingQr(false);
+    }
+  };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -120,6 +236,7 @@ export default function AssetDetailPage({ params }: { params: Promise<{ id: stri
 
   const tabs = [
     { key: 'overview', label: 'Overview & Specifications' },
+    { key: 'qr', label: 'QR Code & Label' },
     { key: 'telemetry', label: `Telemetry Meters (${asset.meters?.length ?? 0})` },
     { key: 'downtime', label: `Downtime Events (${asset.downtimeLogs?.length ?? 0})` },
     { key: 'maintenance', label: `Maintenance History (${asset.workOrders?.length ?? 0})` },
@@ -229,7 +346,30 @@ export default function AssetDetailPage({ params }: { params: Promise<{ id: stri
             <p className="text-[10px] text-slate-400">JPEG, PNG or WebP. Max 5MB.</p>
           </div>
 
+          {/* Quick QR Widget & Specs */}
           <div className="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Public Maintenance QR</h3>
+                <button
+                  onClick={() => setActiveTab('qr')}
+                  className="text-xs font-bold text-[#FF5B00] hover:underline flex items-center gap-1"
+                >
+                  <QrCode className="w-3.5 h-3.5" /> View Label & Print
+                </button>
+              </div>
+              <div className="flex items-center gap-4 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+                {qrDataUrl && <img src={qrDataUrl} alt="QR Code" className="w-20 h-20 rounded-lg bg-white p-1 border border-slate-200 shrink-0" />}
+                <div className="space-y-1 text-xs min-w-0">
+                  <p className="font-mono font-bold text-slate-800">{asset.assetTag}</p>
+                  <p className="text-slate-500 truncate">Scans resolve to public maintenance request portal.</p>
+                  <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold ${asset.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                    {asset.isActive ? 'QR Active' : 'QR Deactivated'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
             <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4">
               <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Technical Specifications</h3>
               <dl className="grid grid-cols-2 gap-4">
@@ -246,22 +386,119 @@ export default function AssetDetailPage({ params }: { params: Promise<{ id: stri
                 ))}
               </dl>
             </div>
+          </div>
+        </div>
+      )}
 
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs space-y-4">
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Custody & Responsibilities</h3>
-              <dl className="grid grid-cols-2 gap-4">
-                {[
-                  { label: 'Custodian', value: asset.custodianUser?.name ?? 'Unassigned' },
-                  { label: 'Responsible User', value: asset.responsibleUser?.name ?? 'Unassigned' },
-                  { label: 'Department', value: asset.responsibleDepartment?.name ?? 'Unassigned' },
-                  { label: 'Branch', value: asset.branch?.name ?? 'N/A' },
-                ].map(({ label, value }) => (
-                  <div key={label}>
-                    <dt className="text-[11px] text-slate-400 font-medium">{label}</dt>
-                    <dd className="mt-0.5 text-sm font-semibold text-slate-700">{value}</dd>
-                  </div>
-                ))}
-              </dl>
+      {/* QR Code & Label Tab */}
+      {activeTab === 'qr' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xs space-y-6 flex flex-col items-center text-center">
+            <div className="w-full flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="text-sm font-bold text-[#080E29] flex items-center gap-2">
+                <QrCode className="w-4 h-4 text-[#FF5B00]" />
+                Printable Equipment QR Label
+              </h3>
+              <span className={`inline-flex px-2 py-1 rounded-full text-[10px] font-bold ${asset.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                {asset.isActive ? 'Active' : 'Inactive'}
+              </span>
+            </div>
+
+            {/* Printable Preview Card */}
+            <div className="border-2 dashed border-slate-300 rounded-xl p-6 bg-slate-50/60 max-w-xs w-full space-y-3 shadow-inner">
+              <div className="text-[11px] font-extrabold tracking-widest text-[#FF5B00] uppercase">ZemiFix CMMS</div>
+              <div className="font-bold text-sm text-slate-900">{asset.name}</div>
+              <div className="font-mono text-xs font-semibold text-slate-600 bg-white px-2.5 py-1 rounded-md border border-slate-200 inline-block">
+                {asset.assetTag}
+              </div>
+              <div className="text-xs text-slate-500">{asset.location?.name ?? asset.site?.name ?? 'Facility Site'}</div>
+              {qrDataUrl && (
+                <div className="bg-white p-3 rounded-xl border border-slate-200 inline-block shadow-sm">
+                  <img src={qrDataUrl} alt="Asset QR Code" className="w-44 h-44 mx-auto" />
+                </div>
+              )}
+              <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-700 pt-1">
+                Scan to Report a Maintenance Issue
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-center gap-3 w-full pt-2">
+              <button
+                onClick={handleDownloadQr}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-[#0B1336] hover:bg-slate-900 text-white text-xs font-bold rounded-xl transition shadow-xs"
+              >
+                <Download className="w-4 h-4" /> Download PNG
+              </button>
+              <button
+                onClick={handlePrintLabel}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-[#FF5B00] hover:bg-orange-600 text-white text-xs font-bold rounded-xl transition shadow-xs"
+              >
+                <Printer className="w-4 h-4" /> Print QR Label
+              </button>
+              <button
+                onClick={handleCopyLink}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-xl transition"
+              >
+                {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                {copied ? 'Link Copied!' : 'Copy Request Link'}
+              </button>
+            </div>
+          </div>
+
+          {/* QR Management & Regeneration */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xs space-y-6">
+            <div className="border-b border-slate-100 pb-3">
+              <h3 className="text-sm font-bold text-[#080E29] flex items-center gap-2">
+                <RefreshCw className="w-4 h-4 text-[#FF5B00]" />
+                QR Identifier & Security Management
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">Regenerate asset tags or deactivate QR scanning without breaking historical records.</p>
+            </div>
+
+            {qrMessage && (
+              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-medium">
+                {qrMessage}
+              </div>
+            )}
+
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="block font-semibold uppercase text-slate-500 mb-1">Asset Tag / QR Reference</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newAssetTag}
+                    onChange={(e) => setNewAssetTag(e.target.value)}
+                    className="flex-1 rounded-xl border border-slate-200 px-3.5 py-2.5 text-sm font-mono text-slate-800 focus:outline-none focus:border-[#FF5B00]"
+                  />
+                  <button
+                    onClick={() => handleUpdateQrSettings({ assetTag: newAssetTag })}
+                    disabled={updatingQr || newAssetTag === asset.assetTag}
+                    className="px-4 py-2.5 bg-[#FF5B00] hover:bg-orange-600 disabled:opacity-50 text-white font-bold rounded-xl transition shadow-xs"
+                  >
+                    {updatingQr ? 'Updating...' : 'Regenerate Tag'}
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">Changing the asset tag updates the QR target link. Older printed labels will require re-printing.</p>
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+                <div>
+                  <span className="font-bold text-slate-800 block">QR Scanning Status</span>
+                  <span className="text-slate-500 text-[11px]">When deactivated, public QR scans will be rejected with 404/404 errors.</span>
+                </div>
+                <button
+                  onClick={() => handleUpdateQrSettings({ isActive: !asset.isActive })}
+                  disabled={updatingQr}
+                  className={`px-4 py-2 text-xs font-bold rounded-xl transition ${
+                    asset.isActive
+                      ? 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+                      : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  }`}
+                >
+                  {asset.isActive ? 'Deactivate QR' : 'Activate QR'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

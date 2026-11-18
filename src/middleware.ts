@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { verifySessionToken } from '@/src/lib/auth';
 
 const PUBLIC_PATHS = [
   '/login',
@@ -9,15 +10,44 @@ const PUBLIC_PATHS = [
   '/api/auth/verify-otp',
   '/api/auth/resend-otp',
   '/api/health',
+  '/request/qr',
+  '/request',
+  '/api/public',
 ];
 
-const TRUSTED_ORIGIN = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+export function getTrustedOrigins(): Set<string> {
+  const origins = new Set<string>();
 
-export function middleware(request: NextRequest) {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  try {
+    origins.add(new URL(appUrl).origin);
+  } catch {
+    origins.add('http://localhost:3000');
+  }
+
+  const additional = process.env.ADDITIONAL_TRUSTED_ORIGINS;
+  if (additional) {
+    additional
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .forEach((urlStr) => {
+        try {
+          const parsed = new URL(urlStr.startsWith('http') ? urlStr : `https://${urlStr}`).origin;
+          origins.add(parsed);
+        } catch {
+          // Ignore invalid URL formats
+        }
+      });
+  }
+
+  return origins;
+}
+
+export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const method = request.method;
   const origin = request.headers.get('origin');
-  const referer = request.headers.get('referer');
 
   // 1. CSRF & Request-Origin Protection for mutation methods (POST, PUT, PATCH, DELETE) on API routes
   if (
@@ -26,9 +56,12 @@ export function middleware(request: NextRequest) {
     !pathname.startsWith('/api/health') &&
     !pathname.startsWith('/api/sync/')
   ) {
-    const isTrustedOrigin = origin
-      ? origin === TRUSTED_ORIGIN || origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')
-      : true; // Fallback for non-browser clients (e.g. mobile PWA/Node worker) if origin header is absent
+    const trustedOrigins = getTrustedOrigins();
+    const isLocalhost = origin
+      ? origin.startsWith('http://localhost:') || origin.startsWith('https://localhost:')
+      : false;
+    const isExplicitlyTrusted = origin ? trustedOrigins.has(origin) : false;
+    const isTrustedOrigin = origin ? (isExplicitlyTrusted || isLocalhost) : true;
 
     if (origin && !isTrustedOrigin) {
       return NextResponse.json(
@@ -62,22 +95,47 @@ export function middleware(request: NextRequest) {
   response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   response.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
 
-  // 3. Allow public paths and API routes to pass through
+  // 3. Allow static Next.js assets to pass through
   if (
     pathname.startsWith('/_next') ||
     pathname.startsWith('/favicon.ico') ||
-    pathname.startsWith('/tailwind.css') ||
-    PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'))
+    pathname.startsWith('/tailwind.css')
   ) {
     return response;
   }
 
-  if (pathname.startsWith('/api/')) {
+  // 4. Role-Aware Navigation & Protection for Authenticated Sessions
+  const sessionCookie = request.cookies.get('zemifix_session')?.value;
+
+  if (sessionCookie) {
+    const sessionPayload = await verifySessionToken(sessionCookie);
+
+    if (sessionPayload) {
+      const userRole = sessionPayload.role || '';
+      const isTechnician = userRole.toLowerCase().includes('technician');
+
+      // Technicians attempting to access administrative dashboard routes are redirected to /pwa
+      if (isTechnician && (pathname === '/' || pathname.startsWith('/dashboard'))) {
+        return NextResponse.redirect(new URL('/pwa', request.url));
+      }
+
+      // Root path '/' or '/login' redirects authenticated users to their role default landing page
+      if (pathname === '/' || pathname === '/login') {
+        const defaultLanding = isTechnician ? '/pwa' : '/dashboard';
+        return NextResponse.redirect(new URL(defaultLanding, request.url));
+      }
+    }
+  }
+
+  // 5. Allow unauthenticated public paths and API routes to pass through
+  if (
+    PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/')) ||
+    pathname.startsWith('/api/')
+  ) {
     return response;
   }
 
-  // 4. For protected staff pages, enforce valid session cookie presence
-  const sessionCookie = request.cookies.get('zemifix_session')?.value;
+  // 6. Unauthenticated requests to protected pages redirect to /login?redirect=${pathname}
   if (!sessionCookie) {
     const loginUrl = new URL('/login', request.url);
     if (pathname !== '/' && pathname !== '/login') {
@@ -91,9 +149,6 @@ export function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    /*
-     * Match all request paths except static files
-     */
     '/((?!_next/static|_next/image|favicon.ico).*)',
   ],
 };

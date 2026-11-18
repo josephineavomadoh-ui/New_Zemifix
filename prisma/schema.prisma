@@ -94,6 +94,7 @@ model Branch {
   purchaseRequisitions    PurchaseRequisition[]
   purchaseOrders          PurchaseOrder[]
   maintenancePlans        MaintenancePlan[]
+  publicIntakes           PublicRequestIntake[]
 
   @@index([parentId])
   @@index([path])
@@ -2371,8 +2372,10 @@ model WorkOrderAttachment {
 // 78. Unauthenticated Public / QR Request Intake
 model PublicRequestIntake {
   id                 String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  siteId             String          @db.Uuid
-  site               CustomerSite    @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  siteId             String?         @db.Uuid
+  site               CustomerSite?   @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  branchId           String?         @db.Uuid
+  branch             Branch?         @relation(fields: [branchId], references: [id], onDelete: Restrict)
   assetId            String?         @db.Uuid
   asset              Asset?          @relation(fields: [assetId], references: [id], onDelete: SetNull)
   idempotencyKey     String?         @unique @db.VarChar(100)
@@ -2387,6 +2390,7 @@ model PublicRequestIntake {
   createdAt          DateTime        @default(now()) @db.Timestamptz
 
   @@index([siteId])
+  @@index([branchId])
   @@index([status])
   @@map("public_request_intake")
 }

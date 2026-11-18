@@ -24,73 +24,77 @@ export async function getScopedWorkOrderFilter(user: AuthenticatedUser) {
     ? await prisma.branch.findUnique({ where: { id: user.branchId }, select: { path: true } }).catch(() => null)
     : null;
 
-  if (accessScope === 'Company' || !user) {
-    return { deletedAt: null };
-  }
+  let baseFilter: any = {};
 
-  if (accessScope === 'BranchAndBelow') {
+  if (accessScope === 'Company' || !user) {
+    baseFilter = {};
+  } else if (accessScope === 'BranchAndBelow') {
     if (!userBranch || !userBranch.path) {
       if (user?.branchId) {
-        return { deletedAt: null, branchId: user.branchId };
+        baseFilter = { branchId: user.branchId };
+      } else {
+        baseFilter = {};
       }
-      return { deletedAt: null };
+    } else {
+      const userBranchPathPrefix = userBranch.path.endsWith('/') ? userBranch.path : `${userBranch.path}/`;
+
+      let grantedBranchPaths: string[] = [];
+      if (grantedBranchIds.length > 0) {
+        const gBranches = await prisma.branch.findMany({
+          where: { id: { in: grantedBranchIds } },
+          select: { path: true },
+        });
+        grantedBranchPaths = gBranches.map((b) => (b.path.endsWith('/') ? b.path : `${b.path}/`));
+      }
+
+      const pathOrConditions = [
+        { branch: { path: { startsWith: userBranchPathPrefix } } },
+        ...grantedBranchPaths.map((p) => ({ branch: { path: { startsWith: p } } })),
+      ];
+
+      baseFilter = { OR: pathOrConditions };
     }
-
-    const userBranchPathPrefix = userBranch.path.endsWith('/') ? userBranch.path : `${userBranch.path}/`;
-
-    let grantedBranchPaths: string[] = [];
-    if (grantedBranchIds.length > 0) {
-      const gBranches = await prisma.branch.findMany({
-        where: { id: { in: grantedBranchIds } },
-        select: { path: true },
-      });
-      grantedBranchPaths = gBranches.map((b) => (b.path.endsWith('/') ? b.path : `${b.path}/`));
-    }
-
-    const pathOrConditions = [
-      { branch: { path: { startsWith: userBranchPathPrefix } } },
-      ...grantedBranchPaths.map((p) => ({ branch: { path: { startsWith: p } } })),
-    ];
-
-    return {
-      deletedAt: null,
-      OR: pathOrConditions,
-    };
-  }
-
-  if (accessScope === 'Branch') {
+  } else if (accessScope === 'Branch') {
     const validBranchIds = [user.branchId, ...grantedBranchIds].filter((id): id is string => Boolean(id));
     if (validBranchIds.length === 0) {
-      return { deletedAt: null, id: '00000000-0000-0000-0000-000000000000' };
+      baseFilter = { id: '00000000-0000-0000-0000-000000000000' };
+    } else {
+      baseFilter = { branchId: { in: validBranchIds } };
     }
-    return {
-      deletedAt: null,
-      branchId: { in: validBranchIds },
-    };
-  }
-
-  if (accessScope === 'Department') {
+  } else if (accessScope === 'Department') {
     const validDeptIds = [user.departmentId, ...grantedDeptIds].filter((id): id is string => Boolean(id));
     if (validDeptIds.length === 0) {
-      return { deletedAt: null, id: '00000000-0000-0000-0000-000000000000' };
+      baseFilter = { id: '00000000-0000-0000-0000-000000000000' };
+    } else {
+      baseFilter = { departmentId: { in: validDeptIds } };
     }
-    return {
-      deletedAt: null,
-      departmentId: { in: validDeptIds },
-    };
-  }
-
-  if (accessScope === 'Own') {
-    return {
-      deletedAt: null,
+  } else if (accessScope === 'Own') {
+    baseFilter = {
       OR: [
-        { assignedUserId: user.id },
-        { supervisorUserId: user.id },
+        { assignedUserId: user?.id },
+        { supervisorUserId: user?.id },
       ],
     };
+  } else {
+    throw new Error(`UNSUPPORTED_ACCESS_SCOPE: Access scope "${accessScope}" is unknown.`);
   }
 
-  throw new Error(`UNSUPPORTED_ACCESS_SCOPE: Access scope "${accessScope}" is unknown.`);
+  // Always ensure explicitly assigned or supervised work orders are visible to the user regardless of branch/department scoping
+  if (!user || accessScope === 'Company' || accessScope === 'Own') {
+    return {
+      deletedAt: null,
+      ...baseFilter,
+    };
+  }
+
+  return {
+    deletedAt: null,
+    OR: [
+      baseFilter,
+      { assignedUserId: user.id },
+      { supervisorUserId: user.id },
+    ],
+  };
 }
 
 export async function createWorkOrder(

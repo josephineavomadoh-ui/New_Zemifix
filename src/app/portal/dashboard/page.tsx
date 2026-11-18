@@ -9,6 +9,9 @@ import {
   RefreshCw,
   ShieldCheck,
   Users,
+  Wrench,
+  DollarSign,
+  User,
 } from 'lucide-react';
 import { Logo } from '@/src/components/brand/Logo';
 import { NotificationHub } from '@/src/components/notifications/NotificationHub';
@@ -63,8 +66,17 @@ export default function CustomerPortalDashboardPage() {
           <Link href="/portal/dashboard" aria-label="ZemiFix customer portal">
             <Logo variant="light" width={142} height={55} />
           </Link>
-          <div className="flex items-center gap-3">
-            <span className="hidden text-xs font-medium text-slate-500 sm:inline">Customer portal</span>
+          <div className="flex items-center gap-4">
+            <nav className="hidden md:flex items-center gap-3 text-xs font-semibold text-slate-600">
+              <Link href="/portal/dashboard" className="text-[#FF5B00]">Dashboard</Link>
+              <Link href="/portal/requests" className="hover:text-[#FF5B00]">Requests</Link>
+              <Link href="/portal/work-orders" className="hover:text-[#FF5B00]">Work Orders</Link>
+              <Link href="/portal/assets" className="hover:text-[#FF5B00]">Assets</Link>
+              <Link href="/portal/contracts" className="hover:text-[#FF5B00]">Contracts</Link>
+              <Link href="/portal/quotes" className="hover:text-[#FF5B00]">Quotes</Link>
+              <Link href="/portal/invoices" className="hover:text-[#FF5B00]">Invoices</Link>
+              <Link href="/portal/profile" className="hover:text-[#FF5B00]">Profile</Link>
+            </nav>
             <NotificationHub realm="portal" />
           </div>
         </div>
@@ -78,15 +90,45 @@ export default function CustomerPortalDashboardPage() {
               Customer workspace
             </div>
             <h1 className="text-2xl font-semibold tracking-tight text-[#080E29]">Service overview</h1>
-            <p className="mt-1 text-sm text-slate-500">Track work orders and review quotes for your authorized sites.</p>
+            <p className="mt-1 text-sm text-slate-500">Track work orders, requests and review quotes for your authorized sites.</p>
           </div>
-          <Link
-            href="/portal/work-orders"
-            className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md bg-[#FF5B00] px-3 py-2 text-xs font-semibold text-white hover:bg-[#F95700]"
-          >
-            <ClipboardList className="h-4 w-4" />
-            View work orders
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/portal/requests"
+              className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md bg-[#FF5B00] px-3 py-2 text-xs font-semibold text-white hover:bg-[#F95700]"
+            >
+              <ClipboardList className="h-4 w-4" />
+              Service Requests
+            </Link>
+            <Link
+              href="/portal/work-orders"
+              className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              Work Orders
+            </Link>
+          </div>
+        </div>
+
+        {/* Quick Nav Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+          {[
+            { label: 'Requests', href: '/portal/requests', icon: ClipboardList },
+            { label: 'Work Orders', href: '/portal/work-orders', icon: ClipboardList },
+            { label: 'Assets', href: '/portal/assets', icon: Wrench },
+            { label: 'Contracts', href: '/portal/contracts', icon: ShieldCheck },
+            { label: 'Quotes', href: '/portal/quotes', icon: FileText },
+            { label: 'Invoices', href: '/portal/invoices', icon: DollarSign },
+            { label: 'Profile', href: '/portal/profile', icon: User },
+          ].map(({ label, href, icon: Icon }) => (
+            <Link
+              key={label}
+              href={href}
+              className="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-200 bg-white hover:border-[#FF5B00] hover:shadow-sm transition group"
+            >
+              <Icon className="w-5 h-5 text-slate-500 group-hover:text-[#FF5B00] mb-1.5 transition" />
+              <span className="text-xs font-semibold text-slate-700 group-hover:text-[#0B1336]">{label}</span>
+            </Link>
+          ))}
         </div>
 
         {error && (

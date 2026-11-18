@@ -89,7 +89,18 @@ export default function LoginPage() {
         setAuthState('otp');
       } else {
         // Fallback redirect if OTP was not required (e.g. session directly issued)
-        router.push('/dashboard');
+        const searchParams = new URLSearchParams(window.location.search);
+        const rawRedirect = searchParams.get('redirect');
+        let targetRoute = '/dashboard';
+        if (
+          rawRedirect &&
+          rawRedirect.startsWith('/') &&
+          !rawRedirect.startsWith('//') &&
+          !rawRedirect.includes(':')
+        ) {
+          targetRoute = rawRedirect;
+        }
+        router.push(targetRoute);
       }
     } catch (err: any) {
       setError(err?.message || 'Network error occurred. Please try again.');
@@ -183,8 +194,26 @@ export default function LoginPage() {
         return;
       }
 
-      // Verification succeeded! Context sets user and we push dashboard
-      router.push('/dashboard');
+      // Verification succeeded! Resolve role-aware landing page or validated redirect callback
+      const searchParams = new URLSearchParams(window.location.search);
+      const rawRedirect = searchParams.get('redirect');
+
+      const roleName = result.user?.role?.name || '';
+      const isTechnician = roleName.toLowerCase().includes('technician');
+
+      let targetRoute = '/dashboard';
+      if (
+        rawRedirect &&
+        rawRedirect.startsWith('/') &&
+        !rawRedirect.startsWith('//') &&
+        !rawRedirect.includes(':')
+      ) {
+        targetRoute = rawRedirect;
+      } else if (isTechnician) {
+        targetRoute = '/pwa';
+      }
+
+      router.push(targetRoute);
     } catch (err: any) {
       setError(err?.message || 'Network error during code verification.');
     } finally {

@@ -4,6 +4,7 @@
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  devIndicators: false,
 };
 
 export default nextConfig;

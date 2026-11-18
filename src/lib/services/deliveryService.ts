@@ -163,6 +163,20 @@ async function sendEmailOtp(
     });
 
     if (result.error) {
+      // In non-production development environments, if Resend sandbox restricts delivery for unverified recipients
+      // (e.g. sending to @zemifix.local or non-owner emails using onboarding@resend.dev), log clear dev console output
+      // and allow mock delivery so dev users are not blocked.
+      if (
+        process.env.NODE_ENV !== 'production' &&
+        (result.error.name === 'validation_error' || result.error.message?.includes('testing emails'))
+      ) {
+        console.warn(
+          `[deliveryService] DEV MOCK FALLBACK — Could not send via Resend sandbox to "${recipient}". ` +
+          `[Dev OTP Code: ${code}]. To receive real emails for ${recipient}, verify your custom domain at resend.com/domains.`
+        );
+        return { ok: true };
+      }
+
       return {
         ok: false,
         detail: `Resend error: ${result.error.name} — ${result.error.message}`,

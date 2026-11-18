@@ -3,6 +3,7 @@ import React from 'react';
 interface LoadingSkeletonProps {
   rows?: number;
   columns?: number;
+  lines?: number;
 }
 
 /**
@@ -11,7 +12,9 @@ interface LoadingSkeletonProps {
 export const LoadingSkeleton: React.FC<LoadingSkeletonProps> = ({
   rows = 5,
   columns = 4,
+  lines,
 }) => {
+  const actualRows = lines ?? rows;
   return (
     <div className="min-w-0 overflow-x-auto">
       <table className="w-full border-collapse text-left text-xs">
@@ -25,7 +28,7 @@ export const LoadingSkeleton: React.FC<LoadingSkeletonProps> = ({
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
-          {Array.from({ length: rows }).map((_, ri) => (
+          {Array.from({ length: actualRows }).map((_, ri) => (
             <tr key={ri}>
               {Array.from({ length: columns }).map((_, ci) => (
                 <td key={ci} className="px-4 py-3.5">

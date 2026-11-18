@@ -74,7 +74,7 @@ export interface PendingPhoto {
   uploadStatus: 'PENDING' | 'UPLOADING' | 'UPLOADED' | 'FAILED';
   errorMessage?: string;
   caption?: string;
-  evidenceType?: 'BEFORE' | 'AFTER' | 'GENERAL';
+  evidenceType?: 'BEFORE' | 'DURING' | 'AFTER' | 'GENERAL';
 }
 
 export interface ConflictRecord {
