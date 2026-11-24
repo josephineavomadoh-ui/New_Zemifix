@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
+import { withApiSecurity } from '@/src/lib/authWrapper';
 import { getProcurementReports } from '@/src/lib/services/procurementService';
 
-export async function GET(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+export const GET = withApiSecurity(
+  { realm: 'STAFF', resource: 'procurement', action: 'read' },
+  async (req, { user, tx }) => {
+    if (!user) return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
 
     const { searchParams } = new URL(req.url);
     const type = searchParams.get('type') ?? 'PO_REGISTER';
@@ -14,9 +14,7 @@ export async function GET(req: NextRequest) {
     const branchId = searchParams.get('branchId') ?? undefined;
     const vendorId = searchParams.get('vendorId') ?? undefined;
 
-    const data = await getProcurementReports(user, type, { startDate, endDate, branchId, vendorId });
+    const data = await getProcurementReports(user, type, { startDate, endDate, branchId, vendorId }, tx);
     return NextResponse.json({ type, data, count: data.length });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to generate procurement report' }, { status: 500 });
   }
-}
+);

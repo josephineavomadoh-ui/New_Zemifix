@@ -1030,6 +1030,8 @@ enum WorkOrderStatus {
   IN_PROGRESS
   ON_HOLD
   COMPLETED
+  VERIFIED
+  CLOSED
   CANCELLED
 }
 

@@ -1,31 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
+import { withApiSecurity } from '@/src/lib/authWrapper';
 import { getVendorById, updateVendor } from '@/src/lib/services/vendorService';
 
-export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const user = await getCurrentUser(req);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+export const GET = withApiSecurity(
+  { realm: 'STAFF', resource: 'procurement', action: 'read' },
+  async (req, { user, tx, params }) => {
+    if (!user) return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
 
-    const { id } = await params;
-    const vendor = await getVendorById(user, id);
+    const { id } = params ?? {};
+    if (!id) return NextResponse.json({ error: 'Vendor ID required' }, { status: 400 });
+
+    const vendor = await getVendorById(user, id, tx);
     return NextResponse.json({ vendor });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to fetch vendor' }, { status: 404 });
   }
-}
+);
 
-export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const user = await getCurrentUser(req);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+export const PATCH = withApiSecurity(
+  { realm: 'STAFF', resource: 'procurement', action: 'update' },
+  async (req, { user, tx, params }) => {
+    if (!user) return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
 
-    const { id } = await params;
+    const { id } = params ?? {};
+    if (!id) return NextResponse.json({ error: 'Vendor ID required' }, { status: 400 });
+
     const body = await req.json();
 
-    const vendor = await updateVendor(user, id, body);
+    const vendor = await updateVendor(user, id, body, tx);
     return NextResponse.json({ success: true, vendor });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to update vendor' }, { status: 400 });
   }
-}
+);

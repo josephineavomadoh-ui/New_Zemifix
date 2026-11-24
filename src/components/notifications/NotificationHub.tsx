@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Bell, Check, ChevronLeft, Settings2 } from 'lucide-react';
 
@@ -25,17 +25,26 @@ const paths = {
   portal: '/api/portal/notifications',
 };
 
-export function NotificationHub({ realm, dark = false }: { realm: Realm; dark?: boolean }) {
+export function NotificationHub({
+  realm,
+  dark = false,
+  triggerClassName,
+}: {
+  realm: Realm;
+  dark?: boolean;
+  triggerClassName?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [showPreferences, setShowPreferences] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [preferences, setPreferences] = useState<Preference[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [error, setError] = useState('');
+  const hubRef = useRef<HTMLDivElement>(null);
   const base = paths[realm];
   const buttonClass = dark
     ? 'border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800'
-    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50';
+    : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-[#080E29]';
   const panelClass = dark
     ? 'border-slate-700 bg-slate-950 text-slate-100'
     : 'border-slate-200 bg-white text-slate-900';
@@ -58,6 +67,25 @@ export function NotificationHub({ realm, dark = false }: { realm: Realm; dark?: 
     const timer = window.setInterval(refresh, 60_000);
     return () => window.clearInterval(timer);
   }, [base]);
+
+  // Click-outside and keyboard Escape listener to close notification popover
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    const handleMouseDown = (e: MouseEvent) => {
+      if (hubRef.current && !hubRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('mousedown', handleMouseDown);
+    };
+  }, [open]);
 
   const loadPreferences = async () => {
     try {
@@ -108,29 +136,39 @@ export function NotificationHub({ realm, dark = false }: { realm: Realm; dark?: 
   };
 
   return (
-    <div className="relative">
+    <div ref={hubRef} className="relative">
       <button
         type="button"
         title="Notifications"
         aria-label={`Notifications, ${unreadCount} unread`}
         aria-expanded={open}
+        aria-haspopup="dialog"
         onClick={() => {
           setOpen((value) => !value);
           setShowPreferences(false);
           refresh();
         }}
-        className={`relative flex h-9 w-9 items-center justify-center rounded-lg border transition-colors ${buttonClass}`}
+        className={
+          triggerClassName
+            ? `relative flex items-center justify-center border transition-colors ${buttonClass} ${triggerClassName}`
+            : `relative flex h-8 w-8 items-center justify-center rounded-md border transition-colors ${buttonClass}`
+        }
       >
         <Bell className="h-4 w-4" />
         {unreadCount > 0 && (
-          <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-rose-600 px-1 text-[9px] font-bold leading-4 text-white">
+          <span className="absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[#FF5B00] px-1 text-[10px] font-bold leading-none text-white">
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
       </button>
 
       {open && (
-        <section className={`absolute right-0 z-[70] mt-2 w-[min(90vw,24rem)] overflow-hidden rounded-xl border shadow-2xl ${panelClass}`}>
+        <section
+          role="dialog"
+          aria-label="Notifications"
+          aria-modal="false"
+          className={`absolute right-0 z-50 mt-2 w-[min(90vw,24rem)] overflow-hidden rounded-xl border shadow-xl ${panelClass}`}
+        >
           <header className="flex items-center justify-between border-b border-slate-500/20 px-4 py-3">
             <div className="flex items-center gap-2">
               {showPreferences && (

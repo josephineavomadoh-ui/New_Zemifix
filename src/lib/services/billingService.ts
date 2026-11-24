@@ -4,6 +4,162 @@ import { AuthenticatedUser } from '../auth';
 import { generateUuidV7 } from '../uuid';
 import { appendAuditLog } from './auditService';
 import { notifyCustomerContact, notifyStaff } from './notificationService';
+import { withSecurityContext, SecurityAccessScope } from './securityContextService';
+import { getScopedWorkOrderFilter } from './workOrderService';
+
+function withBillingContext<T>(
+  user: AuthenticatedUser,
+  callback: (tx: Prisma.TransactionClient) => Promise<T>,
+  existingTx?: Prisma.TransactionClient
+): Promise<T> {
+  if (!user?.id) {
+    throw new Error('SECURITY_CONTEXT_INVALID: A valid staff user context is required.');
+  }
+
+  return withSecurityContext(
+    {
+      userId: user.id,
+      branchId: user.branchId,
+      branchPath: user.branch?.path ?? '',
+      departmentId: user.departmentId,
+      accessScope: (user.accessScope as SecurityAccessScope) ?? 'Own',
+      realm: 'STAFF',
+    },
+    callback,
+    existingTx
+  );
+}
+
+/**
+ * Resolves scoped invoice query filters based on user accessScope.
+ */
+export async function getScopedInvoiceFilter(
+  user: AuthenticatedUser,
+  tx?: Prisma.TransactionClient
+) {
+  if (!tx) {
+    return withBillingContext(user, (activeTx) =>
+      getScopedInvoiceFilter(user, activeTx)
+    );
+  }
+
+  const now = new Date();
+
+  // Fail closed on missing user or unauthenticated context
+  if (!user || !user.id || !user.accessScope) {
+    return { deletedAt: null, id: '00000000-0000-0000-0000-000000000000' };
+  }
+
+  const accessScope = user.accessScope;
+  if (!['Company', 'BranchAndBelow', 'Branch', 'Department', 'Own'].includes(accessScope)) {
+    return { deletedAt: null, id: '00000000-0000-0000-0000-000000000000' };
+  }
+
+  const grants = await tx.userScopeGrant.findMany({
+    where: {
+      userId: user.id,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+    },
+    select: { branchId: true, departmentId: true },
+  });
+
+  const grantedBranchIds = grants.map((g) => g.branchId).filter((id): id is string => Boolean(id));
+  const grantedDeptIds = grants.map((g) => g.departmentId).filter((id): id is string => Boolean(id));
+
+  const userBranch = user.branchId
+    ? await tx.branch.findUnique({ where: { id: user.branchId }, select: { path: true } })
+    : null;
+
+  if (accessScope === 'Company') {
+    if (!userBranch || !userBranch.path) {
+      return { deletedAt: null, id: '00000000-0000-0000-0000-000000000000' };
+    }
+    const segments = userBranch.path.split('/').filter(Boolean);
+    const rootPathSegment = segments.length > 0 ? `/${segments[0]}/` : userBranch.path;
+
+    return {
+      deletedAt: null,
+      createdByUser: {
+        branch: {
+          path: { startsWith: rootPathSegment },
+        },
+      },
+    };
+  }
+
+  if (accessScope === 'Own') {
+    return {
+      deletedAt: null,
+      createdByUserId: user.id,
+    };
+  }
+
+  if (accessScope === 'BranchAndBelow') {
+    if (!userBranch || !userBranch.path) {
+      return {
+        deletedAt: null,
+        OR: [
+          { createdByUserId: user.id },
+          ...(user.branchId ? [{ createdByUser: { branchId: user.branchId } }] : []),
+        ],
+      };
+    }
+
+    const userBranchPathPrefix = userBranch.path.endsWith('/') ? userBranch.path : `${userBranch.path}/`;
+
+    let grantedBranchPaths: string[] = [];
+    if (grantedBranchIds.length > 0) {
+      const gBranches = await tx.branch.findMany({
+        where: { id: { in: grantedBranchIds } },
+        select: { path: true },
+      });
+      grantedBranchPaths = gBranches.map((b) => (b.path.endsWith('/') ? b.path : `${b.path}/`));
+    }
+
+    const pathOrConditions = [
+      { createdByUser: { branch: { path: { startsWith: userBranchPathPrefix } } } },
+      ...grantedBranchPaths.map((p) => ({ createdByUser: { branch: { path: { startsWith: p } } } })),
+    ];
+
+    return {
+      deletedAt: null,
+      OR: [
+        { createdByUserId: user.id },
+        ...pathOrConditions,
+      ],
+    };
+  }
+
+  if (accessScope === 'Branch') {
+    const validBranchIds = [user.branchId, ...grantedBranchIds].filter((id): id is string => Boolean(id));
+    if (validBranchIds.length === 0) {
+      return { deletedAt: null, createdByUserId: user.id };
+    }
+    return {
+      deletedAt: null,
+      OR: [
+        { createdByUserId: user.id },
+        { createdByUser: { branchId: { in: validBranchIds } } },
+      ],
+    };
+  }
+
+  if (accessScope === 'Department') {
+    const validDeptIds = [user.departmentId, ...grantedDeptIds].filter((id): id is string => Boolean(id));
+    if (validDeptIds.length === 0) {
+      return { deletedAt: null, createdByUserId: user.id };
+    }
+    return {
+      deletedAt: null,
+      OR: [
+        { createdByUserId: user.id },
+        { createdByUser: { departmentId: { in: validDeptIds } } },
+      ],
+    };
+  }
+
+  return { deletedAt: null, createdByUserId: user.id };
+}
 
 async function assertInvoiceScope(tx: any, user: AuthenticatedUser, invoice: { createdByUserId: string }) {
   const creator = await tx.user.findUnique({
@@ -105,7 +261,6 @@ async function notifyFinancialPortalContacts(
  * Atomic Concurrency-Safe Document Number Allocator (Gapless Sequence)
  */
 export async function allocateDocumentNumber(tx: any, prefix: string): Promise<string> {
-  // Upsert sequence row if first allocation for this prefix
   let seq = await tx.numberSequence.findUnique({ where: { prefix } });
   if (!seq) {
     seq = await tx.numberSequence.create({
@@ -113,7 +268,6 @@ export async function allocateDocumentNumber(tx: any, prefix: string): Promise<s
     });
   }
 
-  // Row-level lock FOR UPDATE
   const [lockedSeq] = await tx.$queryRaw<Array<{ id: string; nextValue: number }>>`
     SELECT id, "nextValue" FROM "number_sequences" WHERE prefix = ${prefix} FOR UPDATE
   `;
@@ -151,13 +305,14 @@ export async function createInvoice(
       unitPrice: number;
       discountAmount?: number;
     }>;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
   if (params.items.length === 0) {
     throw new Error('EMPTY_INVOICE: Invoice must contain at least one line item.');
   }
 
-  return await prisma.$transaction(async (tx: any) => {
+  return await withBillingContext(user, async (tx) => {
     const customer = await tx.customer.findUnique({ where: { id: params.customerId } });
     if (!customer) throw new Error('CUSTOMER_NOT_FOUND: Customer account does not exist.');
 
@@ -190,7 +345,6 @@ export async function createInvoice(
       };
     });
 
-    // Ghana Statutory Tax Engine (VAT 15%, NHIL 2.5%, GETFund 2.5% = Total 20%)
     const vatAmount = subtotal.mul(new Prisma.Decimal(0.15));
     const nhilAmount = subtotal.mul(new Prisma.Decimal(0.025));
     const getFundAmount = subtotal.mul(new Prisma.Decimal(0.025));
@@ -231,23 +385,52 @@ export async function createInvoice(
     });
 
     return invoice;
-  });
+  }, existingTx);
+}
+
+export async function getInvoices(
+  user: AuthenticatedUser,
+  filters?: { status?: string; customerId?: string },
+  existingTx?: Prisma.TransactionClient
+) {
+  return await withBillingContext(user, async (tx) => {
+    const scopeFilter = await getScopedInvoiceFilter(user, tx);
+    return tx.invoice.findMany({
+      where: {
+        ...scopeFilter,
+        deletedAt: null,
+        ...(filters?.status ? { status: filters.status } : {}),
+        ...(filters?.customerId ? { customerId: filters.customerId } : {}),
+      },
+      include: {
+        customer: { select: { name: true, customerNumber: true } },
+        site: { select: { name: true, siteCode: true } },
+        lines: true,
+        creditNotes: true,
+        allocations: { include: { payment: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }, existingTx);
 }
 
 /**
  * 2. APPROVE INVOICE & ALLOCATE GAPLESS INVOICE NUMBER ATOMICALLY
  */
-export async function approveInvoice(user: AuthenticatedUser, invoiceId: string) {
-  return await prisma.$transaction(async (tx: any) => {
+export async function approveInvoice(user: AuthenticatedUser, invoiceId: string, existingTx?: Prisma.TransactionClient) {
+  return await withBillingContext(user, async (tx) => {
     const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist.');
     const invoiceContext = await assertInvoiceScope(tx, user, invoice);
+
+    if (invoice.createdByUserId === user.id) {
+      throw new Error('MAKER_CHECKER_VIOLATION: Invoice creator cannot approve their own commercial invoice.');
+    }
 
     if (invoice.status !== 'DRAFT' && invoice.status !== 'PENDING_APPROVAL') {
       throw new Error(`INVALID_INVOICE_STATUS: Only DRAFT or PENDING_APPROVAL invoices can be approved (current: ${invoice.status}).`);
     }
 
-    // Allocate Gapless Permanent Invoice Number (e.g. INV-2026-000101)
     const prefix = `INV-${new Date().getFullYear()}`;
     const invoiceNumber = await allocateDocumentNumber(tx, prefix);
 
@@ -289,11 +472,11 @@ export async function approveInvoice(user: AuthenticatedUser, invoiceId: string)
     }
 
     return approvedInvoice;
-  });
+  }, existingTx);
 }
 
-export async function submitInvoiceForApproval(user: AuthenticatedUser, invoiceId: string) {
-  return prisma.$transaction(async (tx: any) => {
+export async function submitInvoiceForApproval(user: AuthenticatedUser, invoiceId: string, existingTx?: Prisma.TransactionClient) {
+  return withBillingContext(user, async (tx) => {
     const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist.');
     const invoiceContext = await assertInvoiceScope(tx, user, invoice);
@@ -327,11 +510,11 @@ export async function submitInvoiceForApproval(user: AuthenticatedUser, invoiceI
       payload: { draftReference: invoice.draftReference },
     });
     return submitted;
-  });
+  }, existingTx);
 }
 
-export async function markInvoiceSent(user: AuthenticatedUser, invoiceId: string) {
-  return prisma.$transaction(async (tx: any) => {
+export async function markInvoiceSent(user: AuthenticatedUser, invoiceId: string, existingTx?: Prisma.TransactionClient) {
+  return withBillingContext(user, async (tx) => {
     const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new Error('INVOICE_NOT_FOUND: Invoice does not exist.');
     const invoiceContext = await assertInvoiceScope(tx, user, invoice);
@@ -373,7 +556,7 @@ export async function markInvoiceSent(user: AuthenticatedUser, invoiceId: string
       payload: { invoiceNumber: invoice.invoiceNumber },
     });
     return sent;
-  });
+  }, existingTx);
 }
 
 /**
@@ -388,16 +571,38 @@ export async function recordPaymentRemittance(
     paymentMethod?: 'BANK_TRANSFER' | 'CHEQUE' | 'MOBILE_MONEY' | 'CASH' | 'CREDIT_CARD';
     referenceNumber?: string;
     notes?: string;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
   if (params.amount <= 0) {
     throw new Error('INVALID_PAYMENT_AMOUNT: Payment remittance amount must be greater than zero.');
   }
 
-  return await prisma.$transaction(async (tx: any) => {
-    const invoice = await tx.invoice.findUnique({ where: { id: params.invoiceId } });
+  return await withBillingContext(user, async (tx) => {
+    const [invoice] = await tx.$queryRaw<Array<{
+      id: string;
+      customerId: string;
+      siteId: string | null;
+      status: string;
+      totalAmount: string;
+      paidAmount: string;
+      creditedAmount: string;
+      balanceDue: string;
+      createdByUserId: string;
+      invoiceNumber: string | null;
+      draftReference: string;
+    }>>`
+      SELECT id, "customerId", "siteId", status, "totalAmount"::text as "totalAmount",
+             "paidAmount"::text as "paidAmount", "creditedAmount"::text as "creditedAmount",
+             "balanceDue"::text as "balanceDue", "createdByUserId", "invoiceNumber", "draftReference"
+        FROM "invoices"
+       WHERE id = ${params.invoiceId}::uuid
+      FOR UPDATE
+    `;
+
     if (!invoice) throw new Error('INVOICE_NOT_FOUND: Target invoice does not exist.');
     const invoiceContext = await assertInvoiceScope(tx, user, invoice);
+
     if (invoice.customerId !== params.customerId) {
       throw new Error('CUSTOMER_INVOICE_MISMATCH: Payment customer must match the target invoice customer.');
     }
@@ -413,7 +618,6 @@ export async function recordPaymentRemittance(
       throw new Error(`OVERPAYMENT_PROHIBITED: Payment amount (${paymentAmt}) exceeds invoice balance due (${currentBalance}).`);
     }
 
-    // Allocate Payment Number
     const prefix = `PAY-${new Date().getFullYear()}`;
     const paymentNumber = await allocateDocumentNumber(tx, prefix);
 
@@ -504,7 +708,37 @@ export async function recordPaymentRemittance(
     });
 
     return { payment, newBalanceDue: newBalance.toString(), newInvoiceStatus: newStatus };
-  });
+  }, existingTx);
+}
+
+export async function getPayments(
+  user: AuthenticatedUser,
+  existingTx?: Prisma.TransactionClient
+) {
+  return await withBillingContext(user, async (tx) => {
+    const scopeFilter = await getScopedInvoiceFilter(user, tx);
+    return tx.payment.findMany({
+      where: {
+        allocations: {
+          some: {
+            invoice: scopeFilter,
+          },
+        },
+      },
+      include: {
+        customer: { select: { name: true, customerNumber: true } },
+        allocations: {
+          where: {
+            invoice: scopeFilter,
+          },
+          include: {
+            invoice: { select: { invoiceNumber: true, draftReference: true } },
+          },
+        },
+      },
+      orderBy: { paymentDate: 'desc' },
+    });
+  }, existingTx);
 }
 
 /**
@@ -516,10 +750,30 @@ export async function issueCreditNote(
     invoiceId: string;
     reason: string;
     subtotal: number;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
-    const invoice = await tx.invoice.findUnique({ where: { id: params.invoiceId } });
+  return await withBillingContext(user, async (tx) => {
+    const [invoice] = await tx.$queryRaw<Array<{
+      id: string;
+      customerId: string;
+      siteId: string | null;
+      status: string;
+      totalAmount: string;
+      paidAmount: string;
+      creditedAmount: string;
+      createdByUserId: string;
+      invoiceNumber: string | null;
+      draftReference: string;
+    }>>`
+      SELECT id, "customerId", "siteId", status, "totalAmount"::text as "totalAmount",
+             "paidAmount"::text as "paidAmount", "creditedAmount"::text as "creditedAmount",
+             "createdByUserId", "invoiceNumber", "draftReference"
+        FROM "invoices"
+       WHERE id = ${params.invoiceId}::uuid
+      FOR UPDATE
+    `;
+
     if (!invoice) throw new Error('INVOICE_NOT_FOUND: Target invoice does not exist.');
     const invoiceContext = await assertInvoiceScope(tx, user, invoice);
 
@@ -528,6 +782,14 @@ export async function issueCreditNote(
     const nhil = sub.mul(new Prisma.Decimal(0.025));
     const getFund = sub.mul(new Prisma.Decimal(0.025));
     const totalCredit = sub.add(vat).add(nhil).add(getFund);
+
+    const currentCredited = new Prisma.Decimal(invoice.creditedAmount);
+    const totalInvoiceAmount = new Prisma.Decimal(invoice.totalAmount);
+    const maxCreditable = totalInvoiceAmount.sub(new Prisma.Decimal(invoice.paidAmount)).sub(currentCredited);
+
+    if (totalCredit.gt(maxCreditable)) {
+      throw new Error(`EXCESS_CREDIT_PROHIBITED: Credit note total (${totalCredit}) exceeds remaining creditable amount (${maxCreditable}).`);
+    }
 
     const prefix = `CN-${new Date().getFullYear()}`;
     const creditNoteNumber = await allocateDocumentNumber(tx, prefix);
@@ -549,9 +811,8 @@ export async function issueCreditNote(
       },
     });
 
-    // Update Invoice creditedAmount and balanceDue
-    const newCredited = new Prisma.Decimal(invoice.creditedAmount).add(totalCredit);
-    const newBalance = new Prisma.Decimal(invoice.totalAmount).sub(new Prisma.Decimal(invoice.paidAmount)).sub(newCredited);
+    const newCredited = currentCredited.add(totalCredit);
+    const newBalance = totalInvoiceAmount.sub(new Prisma.Decimal(invoice.paidAmount)).sub(newCredited);
 
     await tx.invoice.update({
       where: { id: invoice.id },
@@ -593,7 +854,26 @@ export async function issueCreditNote(
     });
 
     return creditNote;
-  });
+  }, existingTx);
+}
+
+export async function getCreditNotes(
+  user: AuthenticatedUser,
+  existingTx?: Prisma.TransactionClient
+) {
+  return await withBillingContext(user, async (tx) => {
+    const scopeFilter = await getScopedInvoiceFilter(user, tx);
+    return tx.creditNote.findMany({
+      where: {
+        invoice: scopeFilter,
+      },
+      include: {
+        customer: { select: { name: true, customerNumber: true } },
+        invoice: { select: { invoiceNumber: true, draftReference: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }, existingTx);
 }
 
 /**
@@ -607,17 +887,19 @@ export async function recordInternalRecharge(
     toDepartmentId: string;
     amount: number;
     description: string;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
   if (params.fromDepartmentId === params.toDepartmentId) {
     throw new Error('INVALID_RECHARGE: Source and destination departments must be different.');
   }
 
-  return await prisma.$transaction(async (tx: any) => {
-    const wo = await tx.workOrder.findUnique({ where: { id: params.workOrderId } });
+  return await withBillingContext(user, async (tx) => {
+    const [wo] = await tx.$queryRaw<Array<{ id: string; workOrderNumber: string }>>`
+      SELECT id, "workOrderNumber" FROM "work_orders" WHERE id = ${params.workOrderId}::uuid FOR UPDATE
+    `;
     if (!wo) throw new Error('WORK_ORDER_NOT_FOUND: Work order does not exist.');
 
-    // Check for duplicate internal recharge for this work order
     const existingRecharge = await tx.internalRecharge.findUnique({
       where: { workOrderId: wo.id },
     });
@@ -651,5 +933,25 @@ export async function recordInternalRecharge(
     });
 
     return recharge;
-  });
+  }, existingTx);
+}
+
+export async function getInternalRecharges(
+  user: AuthenticatedUser,
+  existingTx?: Prisma.TransactionClient
+) {
+  return await withBillingContext(user, async (tx) => {
+    const woFilter = await getScopedWorkOrderFilter(user, tx);
+    return tx.internalRecharge.findMany({
+      where: {
+        workOrder: woFilter,
+      },
+      include: {
+        workOrder: { select: { workOrderNumber: true, title: true } },
+        fromDepartment: { select: { name: true, code: true } },
+        toDepartment: { select: { name: true, code: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }, existingTx);
 }

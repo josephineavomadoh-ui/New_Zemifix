@@ -4,7 +4,7 @@
  * OTP delivery via Resend (email) and Hubtel (SMS).
  *
  * Security decisions:
- *   - OTP plaintext codes are NEVER logged. Only the masked destination is logged.
+ *   - OTP plaintext codes are NEVER logged in production. Only logged in dev-like environments via [DEV OTP].
  *   - Provider credentials are never logged or returned to callers.
  *   - Provider error details are never forwarded to API responses (callers
  *     receive a generic DeliveryError — the internal detail stays server-side).
@@ -27,6 +27,7 @@
 
 import { Resend } from 'resend';
 import { getOtpFromEmail } from '../auth';
+import { isDevLike } from '../env';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,7 +116,7 @@ async function sendEmailOtp(
   const overrideRecipient = process.env.OTP_TEST_OVERRIDE_RECIPIENT?.trim();
 
   // Safety check: Prohibit test recipient override in production.
-  if (process.env.NODE_ENV === 'production' && overrideRecipient) {
+  if (process.env.NODE_ENV === 'production' && !isDevLike() && overrideRecipient) {
     return {
       ok: false,
       detail:
@@ -124,13 +125,11 @@ async function sendEmailOtp(
   }
 
   const recipient =
-    process.env.NODE_ENV !== 'production' && overrideRecipient
+    !isDevLike() && overrideRecipient
       ? overrideRecipient
       : to;
 
   // Development / test mode: mock delivery when no API key is configured.
-  // Check this BEFORE validating OTP_FROM_EMAIL so that dev environments
-  // without a configured sender can still run mock delivery.
   if (!apiKey) {
     console.log(
       `[deliveryService] MOCK EMAIL — to: ${recipient}, ` +
@@ -144,8 +143,12 @@ async function sendEmailOtp(
   try {
     fromAddress = getOtpFromEmail();
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, detail: `OTP_FROM_EMAIL misconfigured: ${msg}` };
+    if (isDevLike()) {
+      fromAddress = 'no-reply@zemifix.local';
+    } else {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, detail: `OTP_FROM_EMAIL misconfigured: ${msg}` };
+    }
   }
 
   const resend = new Resend(apiKey);
@@ -163,16 +166,10 @@ async function sendEmailOtp(
     });
 
     if (result.error) {
-      // In non-production development environments, if Resend sandbox restricts delivery for unverified recipients
-      // (e.g. sending to @zemifix.local or non-owner emails using onboarding@resend.dev), log clear dev console output
-      // and allow mock delivery so dev users are not blocked.
-      if (
-        process.env.NODE_ENV !== 'production' &&
-        (result.error.name === 'validation_error' || result.error.message?.includes('testing emails'))
-      ) {
+      if (isDevLike()) {
         console.warn(
-          `[deliveryService] DEV MOCK FALLBACK — Could not send via Resend sandbox to "${recipient}". ` +
-          `[Dev OTP Code: ${code}]. To receive real emails for ${recipient}, verify your custom domain at resend.com/domains.`
+          `[deliveryService] DEV MOCK FALLBACK — Could not send via Resend to "${recipient}". ` +
+          `[Dev OTP Code: ${code}]. Error: ${result.error.message}`
         );
         return { ok: true };
       }
@@ -186,6 +183,13 @@ async function sendEmailOtp(
     return { ok: true };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+    if (isDevLike()) {
+      console.warn(
+        `[deliveryService] DEV MOCK FALLBACK — Unexpected error during email delivery to "${recipient}". ` +
+        `[Dev OTP Code: ${code}]. Error: ${msg}`
+      );
+      return { ok: true };
+    }
     if (msg.includes('aborted') || msg.includes('abort')) {
       return { ok: false, detail: 'Resend request timed out after 10 seconds.' };
     }
@@ -207,7 +211,7 @@ async function sendSmsOtp(
 
   if (!config) {
     // Development mode: log a mock delivery when Hubtel is not configured
-    if (process.env.HUBTEL_ENABLED !== 'true') {
+    if (process.env.HUBTEL_ENABLED !== 'true' || isDevLike()) {
       console.log(
         `[deliveryService] MOCK SMS — to: ${to} (OTP code suppressed)`
       );
@@ -221,7 +225,6 @@ async function sendSmsOtp(
   }
 
   // Hubtel Send Message API v2
-  // https://developers.hubtel.com/docs/send-message-v2
   const url = 'https://sms.hubtel.com/v1/messages/send';
 
   const body = JSON.stringify({
@@ -231,7 +234,6 @@ async function sendSmsOtp(
     RegisteredDelivery: true,
   });
 
-  // Basic auth: clientId:clientSecret → Base64
   const credentials = Buffer
     .from(`${config.clientId}:${config.clientSecret}`)
     .toString('base64');
@@ -253,7 +255,6 @@ async function sendSmsOtp(
 
     if (!response.ok) {
       const status = response.status;
-      // Read up to 200 chars of the body for diagnostics — never log credentials
       let bodySnippet = '';
       try {
         const text = await response.text();
@@ -267,8 +268,6 @@ async function sendSmsOtp(
 
     const data = await response.json() as Record<string, unknown>;
 
-    // Hubtel returns { status: 0 } for success
-    // https://developers.hubtel.com/docs/send-message-v2#response-codes
     if (typeof data.status === 'number' && data.status !== 0) {
       return {
         ok: false,
@@ -343,7 +342,8 @@ function buildSmsText(code: string): string {
  *
  * @param destination  Verified email address or E.164 phone number.
  * @param channel      'EMAIL' or 'SMS'.
- * @param plainCode    The 6-digit OTP plaintext. Never logged or returned to callers.
+ * @param plainCode    The 6-digit OTP plaintext.
+ * @param purpose      The OTP purpose (e.g. 'LOGIN_MFA').
  *
  * Returns DeliveryResult. On failure, `detail` is a server-side diagnostic
  * that MUST NOT be forwarded to users or included in API responses.
@@ -352,7 +352,13 @@ export async function dispatchOtp(
   destination: string,
   channel: DeliveryChannel,
   plainCode: string,
+  purpose: string = 'LOGIN_MFA',
 ): Promise<DeliveryResult> {
+  if (isDevLike()) {
+    console.log(`[DEV OTP] For: ${destination} Code: ${plainCode} Purpose: ${purpose}`);
+    return { ok: true };
+  }
+
   if (channel === 'EMAIL') {
     return sendEmailOtp(destination, plainCode);
   }

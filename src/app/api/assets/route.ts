@@ -1,16 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
-import { prisma } from '@/src/lib/prisma';
+import { withApiSecurity } from '@/src/lib/authWrapper';
 import { getScopedAssetFilter, createAsset } from '@/src/lib/services/assetService';
 
-export async function GET(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
+export const GET = withApiSecurity(
+  { realm: 'STAFF', resource: 'asset', action: 'read' },
+  async (req, { user, tx }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
-    const filter = await getScopedAssetFilter(user);
+    const filter = await getScopedAssetFilter(user, tx);
 
     const { searchParams } = new URL(req.url);
     const search = searchParams.get('search');
@@ -34,7 +33,7 @@ export async function GET(req: NextRequest) {
         : {}),
     };
 
-    const assets = await prisma.asset.findMany({
+    const assets = await tx.asset.findMany({
       where,
       include: {
         category: { select: { name: true, code: true } },
@@ -50,26 +49,22 @@ export async function GET(req: NextRequest) {
     });
 
     return NextResponse.json({ assets, count: assets.length });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to fetch assets' }, { status: 500 });
   }
-}
+);
 
-export async function POST(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
+export const POST = withApiSecurity(
+  { realm: 'STAFF', resource: 'asset', action: 'create' },
+  async (req, { user, tx }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
     const body = await req.json();
-    const asset = await createAsset({
+    const asset = await createAsset(user, {
       ...body,
       createdByUserId: user.id,
-    });
+    }, tx);
 
     return NextResponse.json({ success: true, asset }, { status: 201 });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to create asset' }, { status: 400 });
   }
-}
+);

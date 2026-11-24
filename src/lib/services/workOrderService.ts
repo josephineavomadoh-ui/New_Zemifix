@@ -1,27 +1,70 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '../prisma';
-import { AuthenticatedUser } from '../auth';
+import type { AuthenticatedUser } from '../auth';
+import {
+  withSecurityContext,
+  type SecurityAccessScope,
+} from './securityContextService';
 import { generateUuidV7 } from '../uuid';
 import { appendAuditLog } from './auditService';
 import { notifyStaff, notifyCustomerContact } from './notificationService';
 
-export async function getScopedWorkOrderFilter(user: AuthenticatedUser) {
+const securityAccessScopes = new Set<string>([
+  'Company',
+  'BranchAndBelow',
+  'Branch',
+  'Department',
+  'Own',
+]);
+
+function withWorkOrderContext<T>(
+  user: AuthenticatedUser,
+  callback: (tx: Prisma.TransactionClient) => Promise<T>,
+  existingTx?: Prisma.TransactionClient
+): Promise<T> {
+  if (!user?.id || !securityAccessScopes.has(user.accessScope)) {
+    throw new Error('SECURITY_CONTEXT_INVALID: A valid staff user and access scope are required.');
+  }
+
+  return withSecurityContext(
+    {
+      userId: user.id,
+      branchId: user.branchId,
+      branchPath: user.branch.path ?? '',
+      departmentId: user.departmentId,
+      accessScope: user.accessScope as SecurityAccessScope,
+      realm: 'STAFF',
+    },
+    callback,
+    existingTx
+  );
+}
+
+export async function getScopedWorkOrderFilter(
+  user: AuthenticatedUser,
+  tx?: Prisma.TransactionClient
+) {
+  if (!tx) {
+    return withWorkOrderContext(user, (activeTx) =>
+      getScopedWorkOrderFilter(user, activeTx)
+    );
+  }
+
   const now = new Date();
   const accessScope = user?.accessScope || 'Company';
 
-  const grants = user?.id ? await prisma.userScopeGrant.findMany({
+  const grants = user?.id ? await tx.userScopeGrant.findMany({
     where: {
       userId: user.id,
       OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
     },
     select: { branchId: true, departmentId: true },
-  }).catch(() => []) : [];
+  }) : [];
 
   const grantedBranchIds = grants.map((g) => g.branchId).filter((id): id is string => Boolean(id));
   const grantedDeptIds = grants.map((g) => g.departmentId).filter((id): id is string => Boolean(id));
 
   const userBranch = user?.branchId
-    ? await prisma.branch.findUnique({ where: { id: user.branchId }, select: { path: true } }).catch(() => null)
+    ? await tx.branch.findUnique({ where: { id: user.branchId }, select: { path: true } })
     : null;
 
   let baseFilter: any = {};
@@ -40,7 +83,7 @@ export async function getScopedWorkOrderFilter(user: AuthenticatedUser) {
 
       let grantedBranchPaths: string[] = [];
       if (grantedBranchIds.length > 0) {
-        const gBranches = await prisma.branch.findMany({
+        const gBranches = await tx.branch.findMany({
           where: { id: { in: grantedBranchIds } },
           select: { path: true },
         });
@@ -119,9 +162,10 @@ export async function createWorkOrder(
     contractId?: string | null;
     slaPolicyId?: string | null;
     maintenancePlanId?: string | null;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
+  return await withWorkOrderContext(user, async (tx) => {
     let branchId = params.branchId ?? user.branchId;
     let departmentId = params.departmentId ?? user.departmentId ?? null;
 
@@ -254,47 +298,265 @@ export async function createWorkOrder(
     }
 
     return wo;
-  });
+  }, existingTx);
 }
 
-export async function getWorkOrders(user: AuthenticatedUser) {
-  const scopeFilter = await getScopedWorkOrderFilter(user);
+export async function getWorkOrders(user: AuthenticatedUser, existingTx?: Prisma.TransactionClient) {
+  return await withWorkOrderContext(user, async (tx) => {
+    const scopeFilter = await getScopedWorkOrderFilter(user, tx);
+    return tx.workOrder.findMany({
+      where: {
+        ...scopeFilter,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        workOrderNumber: true,
+        title: true,
+        description: true,
+        status: true,
+        priority: true,
+        type: true,
+        plannedStart: true,
+        plannedEnd: true,
+        actualStart: true,
+        actualEnd: true,
+        createdAt: true,
+        updatedAt: true,
+        assetId: true,
+        locationId: true,
+        branchId: true,
+        departmentId: true,
+        assignedUserId: true,
+        supervisorUserId: true,
+        asset: { select: { id: true, name: true, assetTag: true, status: true, imageUrl: true } },
+        location: { select: { id: true, name: true, code: true } },
+        branch: { select: { id: true, name: true, code: true } },
+        supervisorUser: { select: { id: true, name: true, email: true } },
+        assignedUser: { select: { id: true, name: true, email: true } },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+  }, existingTx);
+}
 
-  return await prisma.workOrder.findMany({
-    where: {
-      ...scopeFilter,
-    },
-    include: {
-      asset: { select: { id: true, name: true, assetTag: true, status: true, imageUrl: true } },
-      location: { select: { id: true, name: true, code: true } },
-      branch: { select: { id: true, name: true, code: true } },
-      supervisorUser: { select: { id: true, name: true, email: true } },
-      assignedUser: { select: { id: true, name: true, email: true } },
-      tasks: { orderBy: { taskOrder: 'asc' } },
-      checklists: { orderBy: { itemOrder: 'asc' } },
-      labor: { include: { technicianUser: { select: { name: true } } } },
-      parts: true,
-      statusHistory: { orderBy: { changedAt: 'desc' }, take: 10 },
-    },
-    orderBy: { createdAt: 'desc' },
-  });
+export async function getPaginatedWorkOrders(
+  user: AuthenticatedUser,
+  params?: { page?: number; pageSize?: number },
+  existingTx?: Prisma.TransactionClient
+) {
+  return await withWorkOrderContext(user, async (tx) => {
+    const scopeFilter = await getScopedWorkOrderFilter(user, tx);
+    const page = Math.max(1, params?.page ?? 1);
+    const pageSize = Math.min(200, Math.max(1, params?.pageSize ?? 50));
+    const skip = (page - 1) * pageSize;
+
+    const [totalCount, workOrders] = await Promise.all([
+      tx.workOrder.count({ where: { ...scopeFilter, deletedAt: null } }),
+      tx.workOrder.findMany({
+        where: {
+          ...scopeFilter,
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          workOrderNumber: true,
+          title: true,
+          description: true,
+          status: true,
+          priority: true,
+          type: true,
+          plannedStart: true,
+          plannedEnd: true,
+          actualStart: true,
+          actualEnd: true,
+          createdAt: true,
+          updatedAt: true,
+          assetId: true,
+          locationId: true,
+          branchId: true,
+          departmentId: true,
+          assignedUserId: true,
+          supervisorUserId: true,
+          asset: { select: { id: true, name: true, assetTag: true, status: true, imageUrl: true } },
+          location: { select: { id: true, name: true, code: true } },
+          branch: { select: { id: true, name: true, code: true } },
+          supervisorUser: { select: { id: true, name: true, email: true } },
+          assignedUser: { select: { id: true, name: true, email: true } },
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip,
+        take: pageSize,
+      }),
+    ]);
+
+    return {
+      workOrders,
+      pagination: {
+        page,
+        pageSize,
+        totalCount,
+        totalPages: Math.ceil(totalCount / pageSize),
+      },
+    };
+  }, existingTx);
+}
+
+export async function getWorkOrderById(
+  user: AuthenticatedUser,
+  id: string,
+  existingTx?: Prisma.TransactionClient
+) {
+  return await withWorkOrderContext(user, async (tx) => {
+    const scopeFilter = await getScopedWorkOrderFilter(user, tx);
+
+    const workOrder = await tx.workOrder.findFirst({
+      where: {
+        id,
+        ...scopeFilter,
+        deletedAt: null,
+      },
+      include: {
+        asset: {
+          select: {
+            id: true,
+            name: true,
+            assetTag: true,
+            status: true,
+            modelNumber: true,
+            serialNumber: true,
+            manufacturer: true,
+            imageUrl: true,
+            category: { select: { name: true } },
+            location: { select: { name: true } },
+            branch: { select: { name: true } },
+          },
+        },
+        location: { select: { id: true, name: true, code: true, building: true, room: true } },
+        branch: { select: { id: true, name: true, code: true } },
+        department: { select: { id: true, name: true, code: true } },
+        supervisorUser: { select: { id: true, name: true, email: true } },
+        assignedUser: { select: { id: true, name: true, email: true } },
+        tasks: { orderBy: { taskOrder: 'asc' } },
+        checklists: { orderBy: { itemOrder: 'asc' } },
+        labor: { include: { technicianUser: { select: { name: true, email: true } } }, orderBy: { createdAt: 'desc' } },
+        parts: { orderBy: { createdAt: 'desc' } },
+        statusHistory: { include: { changedByUser: { select: { name: true } } }, orderBy: { changedAt: 'desc' } },
+        assignmentHistory: { include: { assignedUser: { select: { name: true } }, assignedByUser: { select: { name: true } } }, orderBy: { assignedAt: 'desc' } },
+        sourceWorkRequests: true,
+        attachments: { orderBy: { createdAt: 'desc' } },
+      },
+    });
+
+    return workOrder;
+  }, existingTx);
+}
+
+export async function createWorkOrderComment(
+  user: AuthenticatedUser,
+  params: {
+    workOrderId: string;
+    commentText: string;
+    isCustomerVisible?: boolean;
+  },
+  existingTx?: Prisma.TransactionClient
+) {
+  return await withWorkOrderContext(user, async (tx) => {
+    const scopeFilter = await getScopedWorkOrderFilter(user, tx);
+    const wo = await tx.workOrder.findFirst({
+      where: { id: params.workOrderId, ...scopeFilter, deletedAt: null },
+    });
+    if (!wo) {
+      throw new Error('WORK_ORDER_NOT_FOUND: Work order not found or not in user scope.');
+    }
+
+    const commentUuid = generateUuidV7();
+    const comment = await tx.workOrderComment.create({
+      data: {
+        id: commentUuid,
+        workOrderId: wo.id,
+        authorUserId: user.id,
+        commentText: params.commentText,
+        isCustomerVisible: params.isCustomerVisible ?? false,
+      },
+    });
+
+    await appendAuditLog(tx, {
+      actorUserId: user.id,
+      action: 'ADDED_WORK_ORDER_COMMENT',
+      resource: 'work_order_comment',
+      resourceId: comment.id,
+      payload: { workOrderId: wo.id, isCustomerVisible: comment.isCustomerVisible },
+    });
+
+    return comment;
+  }, existingTx);
+}
+
+export async function addWorkOrderAttachmentMetadata(
+  user: AuthenticatedUser,
+  params: {
+    workOrderId: string;
+    fileName: string;
+    fileUrl: string;
+    fileSize: number;
+    mimeType: string;
+    isCustomerVisible?: boolean;
+  },
+  existingTx?: Prisma.TransactionClient
+) {
+  return await withWorkOrderContext(user, async (tx) => {
+    const scopeFilter = await getScopedWorkOrderFilter(user, tx);
+    const wo = await tx.workOrder.findFirst({
+      where: { id: params.workOrderId, ...scopeFilter, deletedAt: null },
+    });
+    if (!wo) {
+      throw new Error('WORK_ORDER_NOT_FOUND: Work order not found or not in user scope.');
+    }
+
+    const attachmentUuid = generateUuidV7();
+    const attachment = await tx.workOrderAttachment.create({
+      data: {
+        id: attachmentUuid,
+        workOrderId: wo.id,
+        uploaderUserId: user.id,
+        fileName: params.fileName,
+        fileUrl: params.fileUrl,
+        fileSize: params.fileSize,
+        mimeType: params.mimeType,
+        isCustomerVisible: params.isCustomerVisible ?? false,
+      },
+    });
+
+    await appendAuditLog(tx, {
+      actorUserId: user.id,
+      action: 'ADDED_WORK_ORDER_ATTACHMENT',
+      resource: 'work_order_attachment',
+      resourceId: attachment.id,
+      payload: { workOrderId: wo.id, fileName: params.fileName, fileSize: params.fileSize },
+    });
+
+    return attachment;
+  }, existingTx);
 }
 
 export async function transitionWorkOrderStatus(
   user: AuthenticatedUser,
   params: {
     workOrderId: string;
-    newStatus: 'DRAFT' | 'PENDING_APPROVAL' | 'APPROVED' | 'OPEN' | 'ASSIGNED' | 'IN_PROGRESS' | 'ON_HOLD' | 'COMPLETED' | 'CANCELLED';
+    newStatus: 'DRAFT' | 'PENDING_APPROVAL' | 'APPROVED' | 'OPEN' | 'ASSIGNED' | 'IN_PROGRESS' | 'ON_HOLD' | 'COMPLETED' | 'VERIFIED' | 'CLOSED' | 'CANCELLED';
     reason?: string;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
+  return await withWorkOrderContext(user, async (tx) => {
     const [wo] = await tx.$queryRaw<Array<{
       id: string;
       status: string;
       workOrderNumber: string;
+      actualStart: Date | null;
     }>>`
-      SELECT id, status, "workOrderNumber" FROM "work_orders" WHERE id = ${params.workOrderId}::uuid FOR UPDATE
+      SELECT id, status, "workOrderNumber", "actualStart" FROM "work_orders" WHERE id = ${params.workOrderId}::uuid FOR UPDATE
     `;
 
     if (!wo) throw new Error('WORK_ORDER_NOT_FOUND: Work order does not exist.');
@@ -302,12 +564,20 @@ export async function transitionWorkOrderStatus(
     const currentStatus = wo.status;
 
     // Lifecycle Transition Guards
-    if (currentStatus === 'COMPLETED' && params.newStatus !== 'COMPLETED') {
-      throw new Error('FINALIZED_WORK_ORDER: Completed work order cannot be modified or restarted.');
+    if (currentStatus === 'CLOSED' && params.newStatus !== 'CLOSED') {
+      throw new Error('FINALIZED_WORK_ORDER: Closed work order cannot be modified.');
     }
 
     if (currentStatus === 'CANCELLED' && params.newStatus !== 'CANCELLED') {
       throw new Error('FINALIZED_WORK_ORDER: Cancelled work order cannot be reopened.');
+    }
+
+    if (params.newStatus === 'VERIFIED' && currentStatus !== 'COMPLETED') {
+      throw new Error('INVALID_TRANSITION: Work order must be completed before verification.');
+    }
+
+    if (params.newStatus === 'CLOSED' && currentStatus !== 'VERIFIED' && currentStatus !== 'COMPLETED') {
+      throw new Error('INVALID_TRANSITION: Work order must be verified before closing.');
     }
 
     // Check mandatory checklist items before COMPLETED
@@ -391,7 +661,7 @@ export async function transitionWorkOrderStatus(
     }
 
     return updated;
-  });
+  }, existingTx);
 }
 
 export async function assignWorkOrder(
@@ -399,9 +669,10 @@ export async function assignWorkOrder(
   params: {
     workOrderId: string;
     assignedUserId: string;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
+  return await withWorkOrderContext(user, async (tx) => {
     const wo = await tx.workOrder.findUnique({ where: { id: params.workOrderId } });
     if (!wo || wo.deletedAt !== null) throw new Error('WORK_ORDER_NOT_FOUND: Work order does not exist.');
 
@@ -447,7 +718,7 @@ export async function assignWorkOrder(
     }
 
     return updated;
-  });
+  }, existingTx);
 }
 
 export async function recordWorkOrderLabor(
@@ -460,9 +731,10 @@ export async function recordWorkOrderLabor(
     hourlyRate?: number;
     skillCategory?: 'REGULAR' | 'OVERTIME' | 'EMERGENCY' | 'SPECIALIST';
     description?: string;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
+  return await withWorkOrderContext(user, async (tx) => {
     if (params.hoursWorked <= 0) {
       throw new Error('INVALID_LABOR_HOURS: Hours worked must be greater than zero.');
     }
@@ -525,7 +797,7 @@ export async function recordWorkOrderLabor(
     });
 
     return labor;
-  });
+  }, existingTx);
 }
 
 export async function recordWorkOrderPart(
@@ -537,9 +809,10 @@ export async function recordWorkOrderPart(
     quantityPlanned?: number;
     quantityConsumed?: number;
     unitCost?: number;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
+  return await withWorkOrderContext(user, async (tx) => {
     const wo = await tx.workOrder.findUnique({ where: { id: params.workOrderId } });
     if (!wo) throw new Error('WORK_ORDER_NOT_FOUND: Work order does not exist.');
 
@@ -571,5 +844,5 @@ export async function recordWorkOrderPart(
     }
 
     return part;
-  });
+  }, existingTx);
 }

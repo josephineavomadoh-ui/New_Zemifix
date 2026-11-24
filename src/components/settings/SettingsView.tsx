@@ -158,12 +158,78 @@ export const SettingsView: React.FC = () => {
     return init;
   });
 
+  React.useEffect(() => {
+    fetch('/api/organization/company')
+      .then((res) => res.json())
+      .then((result) => {
+        const comp = result?.data;
+        if (comp) {
+          setLocalSettings((prev) => ({
+            ...prev,
+            company_name: comp.name ?? prev.company_name,
+            legal_name: comp.legalName ?? prev.legal_name,
+            base_currency: comp.baseCurrency ?? prev.base_currency,
+            timezone: comp.timezone ?? prev.timezone,
+            locale: comp.locale ?? prev.locale,
+            date_format: comp.dateFormat ?? prev.date_format,
+            tax_scheme: comp.taxScheme ?? prev.tax_scheme,
+            fiscal_year_start: comp.fiscalYearStart ?? prev.fiscal_year_start,
+            mode_facility: comp.modes?.facility ?? prev.mode_facility,
+            mode_contractor: comp.modes?.contractor ?? prev.mode_contractor,
+            wo_prefix: comp.numberPrefixes?.workOrder ?? prev.wo_prefix,
+            req_prefix: comp.numberPrefixes?.request ?? prev.req_prefix,
+            inv_prefix: comp.numberPrefixes?.invoice ?? prev.inv_prefix,
+            po_prefix: comp.numberPrefixes?.purchaseOrder ?? prev.po_prefix,
+            pr_prefix: comp.numberPrefixes?.requisition ?? prev.pr_prefix,
+            ast_prefix: comp.numberPrefixes?.asset ?? prev.ast_prefix,
+          }));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const toggle = (key: string) => { setLocalSettings((p) => ({ ...p, [key]: !p[key] })); };
   const update = (key: string, val: string) => { setLocalSettings((p) => ({ ...p, [key]: val })); };
 
-  const save = () => {
-    setSavedToast(true);
-    setTimeout(() => setSavedToast(false), 2500);
+  const save = async () => {
+    try {
+      const payload = {
+        name: String(localSettings['company_name'] || ''),
+        legalName: String(localSettings['legal_name'] || ''),
+        baseCurrency: String(localSettings['base_currency'] || 'GHS'),
+        timezone: String(localSettings['timezone'] || 'Africa/Accra'),
+        locale: String(localSettings['locale'] || 'en-GH'),
+        dateFormat: String(localSettings['date_format'] || 'YYYY-MM-DD'),
+        taxScheme: String(localSettings['tax_scheme'] || 'GRA Standard'),
+        fiscalYearStart: Number(localSettings['fiscal_year_start'] || 1),
+        modes: {
+          facility: Boolean(localSettings['mode_facility']),
+          contractor: Boolean(localSettings['mode_contractor']),
+          customerIsolation: Boolean(localSettings['mode_customer_isolation']),
+          billing: Boolean(localSettings['mode_billing']),
+        },
+        numberPrefixes: {
+          workOrder: String(localSettings['wo_prefix'] || 'WO-'),
+          request: String(localSettings['req_prefix'] || 'REQ-'),
+          invoice: String(localSettings['inv_prefix'] || 'INV-'),
+          purchaseOrder: String(localSettings['po_prefix'] || 'PO-'),
+          requisition: String(localSettings['pr_prefix'] || 'PR-'),
+          asset: String(localSettings['ast_prefix'] || 'AST-'),
+          grn: String(localSettings['grn_prefix'] || 'GRN-'),
+          pmPlan: String(localSettings['pm_prefix'] || 'PM-'),
+        },
+      };
+      const res = await fetch('/api/organization/company', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error('Failed to save settings');
+      setSavedToast(true);
+      setTimeout(() => setSavedToast(false), 2500);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Error saving settings');
+    }
   };
 
   const rows = SETTINGS[activeCategory] ?? [];

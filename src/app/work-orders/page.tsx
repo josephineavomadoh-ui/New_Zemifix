@@ -11,6 +11,7 @@ import {
 import { WorkOrderStatusBadge } from '@/src/components/work-orders/WorkOrderStatusBadge';
 import { WorkOrderPriorityBadge } from '@/src/components/work-orders/WorkOrderPriorityBadge';
 import { AssetThumbnail } from '@/src/components/assets/AssetThumbnail';
+import { LoadingSkeleton } from '@/src/components/ui/LoadingSkeleton';
 
 // Helper for safe JSON fetching (prevents SyntaxError on HTML / non-JSON error responses)
 async function safeFetchJson(url: string, options?: RequestInit) {
@@ -197,6 +198,17 @@ export default function WorkOrdersListPage() {
   const handleQuickTransition = async (workOrderId: string, newStatus: string, reason?: string) => {
     if (transitioningId) return;
     setTransitioningId(workOrderId);
+
+    const prevWorkOrders = [...workOrders];
+    const prevSelectedWo = selectedWo ? { ...selectedWo } : null;
+
+    setWorkOrders((prev) =>
+      prev.map((wo) => (wo.id === workOrderId ? { ...wo, status: newStatus } : wo))
+    );
+    if (selectedWoId === workOrderId && selectedWo) {
+      setSelectedWo((prev) => (prev ? { ...prev, status: newStatus } : null));
+    }
+
     try {
       await safeFetchJson(`/api/work-orders/${workOrderId}/status`, {
         method: 'POST',
@@ -209,6 +221,8 @@ export default function WorkOrdersListPage() {
         await fetchWorkOrderDetail(workOrderId);
       }
     } catch (err) {
+      setWorkOrders(prevWorkOrders);
+      setSelectedWo(prevSelectedWo);
       alert(err instanceof Error ? err.message : 'Failed to update work order status');
     } finally {
       setTransitioningId(null);
@@ -218,6 +232,30 @@ export default function WorkOrdersListPage() {
   // Assign Technician from Detail Panel
   const handleAssignTechnician = async (techId: string) => {
     if (!selectedWoId) return;
+
+    const prevWorkOrders = [...workOrders];
+    const prevSelectedWo = selectedWo ? { ...selectedWo } : null;
+    const targetTech = users.find((u) => u.id === techId);
+
+    setWorkOrders((prev) =>
+      prev.map((wo) =>
+        wo.id === selectedWoId
+          ? { ...wo, assignedUserId: techId, assignedUser: targetTech ? { name: targetTech.name, email: targetTech.email } : wo.assignedUser }
+          : wo
+      )
+    );
+    if (selectedWo) {
+      setSelectedWo((prev) =>
+        prev
+          ? {
+              ...prev,
+              assignedUserId: techId,
+              assignedUser: targetTech ? { name: targetTech.name, email: targetTech.email } : prev.assignedUser,
+            }
+          : null
+      );
+    }
+
     try {
       await safeFetchJson(`/api/work-orders/${selectedWoId}/assign`, {
         method: 'POST',
@@ -228,6 +266,8 @@ export default function WorkOrdersListPage() {
       await fetchWorkOrders(true);
       await fetchWorkOrderDetail(selectedWoId);
     } catch (err) {
+      setWorkOrders(prevWorkOrders);
+      setSelectedWo(prevSelectedWo);
       alert(err instanceof Error ? err.message : 'Failed to assign technician');
     }
   };
@@ -598,9 +638,8 @@ export default function WorkOrdersListPage() {
         {/* LEFT PANEL: Work Orders List / Table / Board (~60-65% width -> lg:col-span-7) */}
         <div className={`lg:col-span-7 space-y-4 min-w-0 ${selectedWoId ? 'hidden lg:block' : 'block'}`}>
           {loading ? (
-            <div className="rounded-xl border border-slate-200 bg-white p-12 text-center text-sm text-slate-500 shadow-xs">
-              <RefreshCw className="mx-auto h-6 w-6 animate-spin text-[#FF5B00] mb-2" />
-              Loading Work Orders...
+            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs">
+              <LoadingSkeleton rows={6} columns={8} />
             </div>
           ) : error ? (
             <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-8 text-center shadow-xs space-y-2">

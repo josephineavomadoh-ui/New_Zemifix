@@ -1,31 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
-import { prisma } from '@/src/lib/prisma';
-import { relocateAsset } from '@/src/lib/services/assetService';
+import { withApiSecurity } from '@/src/lib/authWrapper';
+import { relocateAsset, getScopedAssetFilter } from '@/src/lib/services/assetService';
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const { id } = await params;
-    const user = await getCurrentUser(req);
+export const POST = withApiSecurity(
+  { realm: 'STAFF', resource: 'asset', action: 'update' },
+  async (req, { user, tx, params }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
+    }
+
+    const { id } = params ?? {};
+    if (!id) {
+      return NextResponse.json({ error: 'Asset ID required' }, { status: 400 });
+    }
+
+    const scopeFilter = await getScopedAssetFilter(user, tx);
+    const existing = await tx.asset.findFirst({ where: { id, ...scopeFilter, deletedAt: null } });
+    if (!existing) {
+      return NextResponse.json({ error: 'Asset not found' }, { status: 404 });
     }
 
     const body = await req.json();
 
-    const result = await prisma.$transaction(async (tx: any) => {
-      return await relocateAsset(tx, {
-        assetId: id,
-        toLocationId: body.toLocationId,
-        toSiteId: body.toSiteId,
-        toPhysicalSiteCustomerId: body.toPhysicalSiteCustomerId,
-        reason: body.reason,
-        movedByUserId: user.id,
-      });
+    const result = await relocateAsset(tx, {
+      assetId: existing.id,
+      toLocationId: body.toLocationId,
+      toSiteId: body.toSiteId,
+      toPhysicalSiteCustomerId: body.toPhysicalSiteCustomerId,
+      reason: body.reason,
+      movedByUserId: user.id,
     });
 
     return NextResponse.json({ success: true, result });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to relocate asset' }, { status: 400 });
   }
-}
+);

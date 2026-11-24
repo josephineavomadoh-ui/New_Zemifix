@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'crypto';
 import { runNotificationWorker } from '@/src/lib/services/notificationService';
 import { evaluateAllActiveSlaBreaches } from '@/src/lib/services/slaService';
 

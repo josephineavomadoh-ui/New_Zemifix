@@ -4,6 +4,7 @@ import { getUserForAuthentication } from '@/src/lib/services/userService';
 import { getCompany } from '@/src/lib/services/organizationService';
 import { createOtpChallenge } from '@/src/lib/services/otpService';
 import { dispatchOtp, maskDestination } from '@/src/lib/services/deliveryService';
+import { isDevLike } from '@/src/lib/env';
 import {
   checkPasswordRateLimit,
   recordPasswordFailure,
@@ -128,7 +129,8 @@ export async function POST(req: NextRequest) {
     const deliveryResult = await dispatchOtp(
       destination,
       channel,
-      challengeResult.plainCode
+      challengeResult.plainCode,
+      'LOGIN_MFA'
     );
 
     if (!deliveryResult.ok) {
@@ -150,6 +152,19 @@ export async function POST(req: NextRequest) {
       channel,
       destination: masked,
     });
+
+    // ---- Development OTP cache (challenge‑id keyed) ----
+    if (isDevLike()) {
+      // Lazy import to avoid pulling dev store into production bundle.
+      const { setOtp } = await import('@/src/lib/services/devOtpStore');
+      const { prisma } = await import('@/src/lib/prisma');
+      const otpRow = await prisma.authOtp.findUnique({
+        where: { id: challengeResult.otpRecordId },
+        select: { expiresAt: true },
+      });
+      const expiresAt = otpRow?.expiresAt ?? new Date(Date.now() + 5 * 60 * 1000);
+      setOtp(challengeResult.otpRecordId, challengeResult.plainCode, expiresAt);
+    }
 
     const response = NextResponse.json({
       success: true,

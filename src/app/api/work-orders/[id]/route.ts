@@ -1,56 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
-import { prisma } from '@/src/lib/prisma';
+import { withApiSecurity } from '@/src/lib/authWrapper';
+import { getWorkOrderById } from '@/src/lib/services/workOrderService';
 
-export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const { id } = await params;
-    const user = await getCurrentUser(req);
+export const GET = withApiSecurity(
+  { realm: 'STAFF', resource: 'work_order', action: 'read' },
+  async (req, { user, tx, params }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
-    const workOrder = await prisma.workOrder.findUnique({
-      where: { id },
-      include: {
-        asset: {
-          select: {
-            id: true,
-            name: true,
-            assetTag: true,
-            status: true,
-            modelNumber: true,
-            serialNumber: true,
-            manufacturer: true,
-            imageUrl: true,
-            category: { select: { name: true } },
-            location: { select: { name: true } },
-            branch: { select: { name: true } },
-          },
-        },
-        location: { select: { id: true, name: true, code: true, building: true, room: true } },
-        branch: { select: { id: true, name: true, code: true } },
-        department: { select: { id: true, name: true, code: true } },
-        supervisorUser: { select: { id: true, name: true, email: true } },
-        assignedUser: { select: { id: true, name: true, email: true } },
-        tasks: { orderBy: { taskOrder: 'asc' } },
-        checklists: { orderBy: { itemOrder: 'asc' } },
-        labor: { include: { technicianUser: { select: { name: true, email: true } } }, orderBy: { createdAt: 'desc' } },
-        parts: { orderBy: { createdAt: 'desc' } },
-        statusHistory: { include: { changedByUser: { select: { name: true } } }, orderBy: { changedAt: 'desc' } },
-        assignmentHistory: { include: { assignedUser: { select: { name: true } }, assignedByUser: { select: { name: true } } }, orderBy: { assignedAt: 'desc' } },
-        sourceWorkRequests: true,
-        attachments: { orderBy: { createdAt: 'desc' } },
-      },
-    });
+    const { id } = params ?? {};
+    if (!id) {
+      return NextResponse.json({ error: 'Work order ID required' }, { status: 400 });
+    }
 
-    if (!workOrder || workOrder.deletedAt !== null) {
+    const workOrder = await getWorkOrderById(user, id, tx);
+
+    if (!workOrder) {
       return NextResponse.json({ error: 'Work order not found' }, { status: 404 });
     }
 
     return NextResponse.json({ workOrder });
-  } catch (err: any) {
-    console.error(`[API /api/work-orders/${params ? '(id)' : ''} GET error]:`, err);
-    return NextResponse.json({ error: err.message ?? 'Failed to fetch work order detail' }, { status: 500 });
   }
-}
+);

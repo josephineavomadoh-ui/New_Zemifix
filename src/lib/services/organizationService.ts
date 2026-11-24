@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
 import { z } from 'zod';
 import {
@@ -24,6 +25,53 @@ export const createDepartmentSchema = z.object({
   parentId: z.string().uuid().optional().nullable(),
   headUserId: z.string().uuid().optional().nullable(),
 });
+
+export const updateCompanySchema = z.object({
+  name: z.string().min(2).max(150).optional(),
+  legalName: z.string().min(2).max(200).optional(),
+  baseCurrency: z.string().length(3).optional(),
+  timezone: z.string().min(2).max(50).optional(),
+  locale: z.string().min(2).max(20).optional(),
+  dateFormat: z.string().min(2).max(20).optional(),
+  taxScheme: z.string().min(2).max(50).optional(),
+  fiscalYearStart: z.number().int().min(1).max(12).optional(),
+  modes: z.record(z.string(), z.boolean()).optional(),
+  numberPrefixes: z.record(z.string(), z.string()).optional(),
+});
+
+export async function updateCompany(input: z.infer<typeof updateCompanySchema>) {
+  const validated = updateCompanySchema.parse(input);
+  try {
+    const existing = await prisma.company.findFirst();
+    if (!existing) {
+      const created = await prisma.company.create({
+        data: {
+          name: validated.name || 'ZemiFix Engineering Ghana Ltd',
+          legalName: validated.legalName || 'ZemiFix Engineering Services Ghana Limited',
+          baseCurrency: validated.baseCurrency || 'GHS',
+          timezone: validated.timezone || 'Africa/Accra',
+          locale: validated.locale || 'en-GH',
+          dateFormat: validated.dateFormat || 'YYYY-MM-DD',
+          taxScheme: validated.taxScheme || 'GRA Standard',
+          fiscalYearStart: validated.fiscalYearStart || 1,
+          modes: validated.modes || { facility: true, contractor: true },
+          numberPrefixes: validated.numberPrefixes || { workOrder: 'WO-', invoice: 'INV-', quote: 'QT-', asset: 'AST-', request: 'REQ-' },
+        },
+      });
+      return { data: created, source: 'database' as const, isDemoData: false };
+    }
+    const updated = await prisma.company.update({
+      where: { id: existing.id },
+      data: validated,
+    });
+    return { data: updated, source: 'database' as const, isDemoData: false };
+  } catch (err) {
+    if (isDatabaseConnectionError(err)) {
+      throw new DatabaseUnavailableError('Failed to update company settings: PostgreSQL database is unreachable.');
+    }
+    throw err;
+  }
+}
 
 // Explicit demonstration baseline (active ONLY when ENABLE_DEMO_MODE=true)
 const demoCompany = {

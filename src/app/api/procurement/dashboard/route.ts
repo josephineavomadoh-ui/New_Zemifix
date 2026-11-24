@@ -1,21 +1,15 @@
 ﻿import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
+import { withApiSecurity } from '@/src/lib/authWrapper';
 import { getProcurementMetrics } from '@/src/lib/services/procurementService';
 
-export async function GET(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
+export const GET = withApiSecurity(
+  { realm: 'STAFF', resource: 'procurement', action: 'read' },
+  async (req, { user, tx }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
-    const metrics = await getProcurementMetrics(user);
+    const metrics = await getProcurementMetrics(user, tx);
     return NextResponse.json(metrics, { status: 200 });
-  } catch (err: any) {
-    console.error('GET /api/procurement/dashboard failed:', err);
-    return NextResponse.json(
-      { error: err?.message ?? 'Failed to load procurement dashboard metrics' },
-      { status: 500 }
-    );
   }
-}
+);

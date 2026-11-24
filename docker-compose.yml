@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zemifix_postgres
+    environment:
+      POSTGRES_USER: zemifix
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_staging_password}
+      POSTGRES_DB: zemifix_staging
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zemifix -d zemifix_staging"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zemifix_web
+    environment:
+      - APP_ENV=staging
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://zemifix:${DB_PASSWORD:-secure_staging_password}@postgres:5432/zemifix_staging?schema=public
+      - DIRECT_URL=postgresql://zemifix:${DB_PASSWORD:-secure_staging_password}@postgres:5432/zemifix_staging?schema=public
+      - SESSION_SECRET=${SESSION_SECRET}
+      - PORTAL_SESSION_SECRET=${PORTAL_SESSION_SECRET}
+      - SECURITY_CONTEXT_SECRET=${SECURITY_CONTEXT_SECRET}
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - INITIAL_ADMIN_EMAIL=${INITIAL_ADMIN_EMAIL}
+      - INITIAL_ADMIN_PASSWORD=${INITIAL_ADMIN_PASSWORD}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - storage_data:/app/storage/uploads
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zemifix_worker
+    command: ["node", "-e", "console.log('Background worker process running...')"]
+    environment:
+      - APP_ENV=staging
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://zemifix:${DB_PASSWORD:-secure_staging_password}@postgres:5432/zemifix_staging?schema=public
+      - DIRECT_URL=postgresql://zemifix:${DB_PASSWORD:-secure_staging_password}@postgres:5432/zemifix_staging?schema=public
+      - SECURITY_CONTEXT_SECRET=${SECURITY_CONTEXT_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  storage_data:

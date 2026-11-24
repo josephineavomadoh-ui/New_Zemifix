@@ -1,18 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
-import { prisma } from '@/src/lib/prisma';
+import { withApiSecurity } from '@/src/lib/authWrapper';
+import { getScopedAssetFilter } from '@/src/lib/services/assetService';
 import { appendAuditLog } from '@/src/lib/services/auditService';
 
-export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const { id } = await params;
-    const user = await getCurrentUser(req);
+export const GET = withApiSecurity(
+  { realm: 'STAFF', resource: 'asset', action: 'read' },
+  async (req, { user, tx, params }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
-    const asset = await prisma.asset.findUnique({
-      where: { id },
+    const { id } = params ?? {};
+    if (!id) {
+      return NextResponse.json({ error: 'Asset ID required' }, { status: 400 });
+    }
+
+    const scopeFilter = await getScopedAssetFilter(user, tx);
+    const asset = await tx.asset.findFirst({
+      where: { id, ...scopeFilter, deletedAt: null },
       include: {
         category: true,
         location: true,
@@ -35,88 +40,94 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       },
     });
 
-    if (!asset || asset.deletedAt !== null) {
+    if (!asset) {
       return NextResponse.json({ error: 'Asset not found' }, { status: 404 });
     }
 
     return NextResponse.json({ asset });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to fetch asset detail' }, { status: 500 });
   }
-}
+);
 
-export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const { id } = await params;
-    const user = await getCurrentUser(req);
+export const PATCH = withApiSecurity(
+  { realm: 'STAFF', resource: 'asset', action: 'update' },
+  async (req, { user, tx, params }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
+    }
+
+    const { id } = params ?? {};
+    if (!id) {
+      return NextResponse.json({ error: 'Asset ID required' }, { status: 400 });
+    }
+
+    const scopeFilter = await getScopedAssetFilter(user, tx);
+    const existing = await tx.asset.findFirst({ where: { id, ...scopeFilter, deletedAt: null } });
+    if (!existing) {
+      return NextResponse.json({ error: 'Asset not found' }, { status: 404 });
     }
 
     const body = await req.json();
 
-    const updated = await prisma.$transaction(async (tx: any) => {
-      const asset = await tx.asset.update({
-        where: { id },
-        data: {
-          name: body.name,
-          assetTag: body.assetTag,
-          isActive: body.isActive,
-          description: body.description,
-          criticality: body.criticality,
-          manufacturer: body.manufacturer,
-          modelNumber: body.modelNumber,
-          serialNumber: body.serialNumber,
-          custodianUserId: body.custodianUserId ?? null,
-          responsibleUserId: body.responsibleUserId ?? null,
-          responsibleDepartmentId: body.responsibleDepartmentId ?? null,
-        },
-      });
-
-      await appendAuditLog(tx, {
-        actorUserId: user.id,
-        action: 'EDITED_ASSET_DETAILS',
-        resource: 'asset',
-        resourceId: id,
-        payload: { name: body.name, assetTag: asset.assetTag },
-      });
-
-      return asset;
+    const asset = await tx.asset.update({
+      where: { id: existing.id },
+      data: {
+        name: body.name,
+        assetTag: body.assetTag,
+        isActive: body.isActive,
+        description: body.description,
+        criticality: body.criticality,
+        manufacturer: body.manufacturer,
+        modelNumber: body.modelNumber,
+        serialNumber: body.serialNumber,
+        custodianUserId: body.custodianUserId ?? null,
+        responsibleUserId: body.responsibleUserId ?? null,
+        responsibleDepartmentId: body.responsibleDepartmentId ?? null,
+      },
     });
 
-    return NextResponse.json({ success: true, asset: updated });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to update asset' }, { status: 400 });
-  }
-}
+    await appendAuditLog(tx, {
+      actorUserId: user.id,
+      action: 'EDITED_ASSET_DETAILS',
+      resource: 'asset',
+      resourceId: id,
+      payload: { name: body.name, assetTag: asset.assetTag },
+    });
 
-export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const { id } = await params;
-    const user = await getCurrentUser(req);
+    return NextResponse.json({ success: true, asset });
+  }
+);
+
+export const DELETE = withApiSecurity(
+  { realm: 'STAFF', resource: 'asset', action: 'delete' },
+  async (req, { user, tx, params }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
-    const archived = await prisma.$transaction(async (tx: any) => {
-      const asset = await tx.asset.update({
-        where: { id },
-        data: { deletedAt: new Date(), isActive: false },
-      });
+    const { id } = params ?? {};
+    if (!id) {
+      return NextResponse.json({ error: 'Asset ID required' }, { status: 400 });
+    }
 
-      await appendAuditLog(tx, {
-        actorUserId: user.id,
-        action: 'ARCHIVED_ASSET',
-        resource: 'asset',
-        resourceId: id,
-        payload: { assetTag: asset.assetTag, name: asset.name },
-      });
+    const scopeFilter = await getScopedAssetFilter(user, tx);
+    const existing = await tx.asset.findFirst({ where: { id, ...scopeFilter, deletedAt: null } });
+    if (!existing) {
+      return NextResponse.json({ error: 'Asset not found' }, { status: 404 });
+    }
 
-      return asset;
+    const asset = await tx.asset.update({
+      where: { id: existing.id },
+      data: { deletedAt: new Date(), isActive: false },
+    });
+
+    await appendAuditLog(tx, {
+      actorUserId: user.id,
+      action: 'ARCHIVED_ASSET',
+      resource: 'asset',
+      resourceId: id,
+      payload: { assetTag: asset.assetTag, name: asset.name },
     });
 
     return NextResponse.json({ success: true, archived: true });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to archive asset' }, { status: 400 });
   }
-}
+);

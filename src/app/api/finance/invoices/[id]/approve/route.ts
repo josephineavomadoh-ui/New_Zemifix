@@ -1,19 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
+import { withApiSecurity } from '@/src/lib/authWrapper';
 import { approveInvoice } from '@/src/lib/services/billingService';
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const { id } = await params;
-    const user = await getCurrentUser(req);
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+export const POST = withApiSecurity(
+  { realm: 'STAFF', resource: 'invoice', action: 'approve' },
+  async (req, { user, tx, params }) => {
+    if (!user) return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
 
-    const invoice = await approveInvoice(user, id);
+    const { id } = params ?? {};
+    if (!id) return NextResponse.json({ error: 'Invoice ID required' }, { status: 400 });
 
+    const invoice = await approveInvoice(user, id, tx);
     return NextResponse.json({ success: true, invoice });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to approve invoice' }, { status: 400 });
   }
-}
+);

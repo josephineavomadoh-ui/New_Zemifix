@@ -6,6 +6,7 @@ import { S3WormAnchorRepository } from './auditExternalRepository';
 import { evaluateAllActiveSlaBreaches } from './slaService';
 import { notifyStaff } from './notificationService';
 import { createWorkOrder } from './workOrderService';
+import { dispatchOtp } from './deliveryService';
 import crypto from 'crypto';
 
 export interface EnqueueJobParams {
@@ -278,14 +279,36 @@ async function executeNotificationProcessingJob() {
       nextAttemptAt: { lte: new Date() },
     },
     take: 50,
-    include: { notification: true },
+    include: {
+      notification: {
+        include: {
+          recipientUser: { select: { email: true } },
+          recipientContact: { select: { email: true } },
+        },
+      },
+    },
   });
 
   let sentCount = 0;
   let failCount = 0;
 
   for (const delivery of pendingDeliveries) {
-    try {
+    const email = delivery.notification.recipientUser?.email || delivery.notification.recipientContact?.email;
+    if (!email) {
+      await prisma.notificationEmailDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          status: 'FAILED',
+          lastError: 'NO_RECIPIENT_EMAIL: Notification has no recipient email address.',
+          attemptCount: { increment: 1 },
+        },
+      });
+      failCount++;
+      continue;
+    }
+
+    const res = await dispatchOtp(email, 'EMAIL', delivery.notification.emailBody);
+    if (res.ok) {
       await prisma.notificationEmailDelivery.update({
         where: { id: delivery.id },
         data: {
@@ -295,13 +318,14 @@ async function executeNotificationProcessingJob() {
         },
       });
       sentCount++;
-    } catch (err: any) {
+    } else {
       failCount++;
+      const failRes = res as { ok: false; detail: string };
       await prisma.notificationEmailDelivery.update({
         where: { id: delivery.id },
         data: {
           status: 'FAILED',
-          lastError: err.message,
+          lastError: failRes.detail,
           attemptCount: { increment: 1 },
           nextAttemptAt: new Date(Date.now() + 15 * 60 * 1000),
         },

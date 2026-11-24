@@ -64,6 +64,7 @@ export default function CustomerPortalInvoicesPage() {
                     <th className={thClass}>Balance Due</th>
                     <th className={thClass}>Due Date</th>
                     <th className={thClass}>Status</th>
+                    <th className={thClass}>Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -76,6 +77,16 @@ export default function CustomerPortalInvoicesPage() {
                       <td className={`${tdClass} text-slate-500 text-xs`}>{new Date(inv.dueDate).toLocaleDateString()}</td>
                       <td className={tdClass}>
                         <StatusBadge status={inv.status} />
+                      </td>
+                      <td className={tdClass}>
+                        <a
+                          href={`/api/portal/invoices/${inv.id}/pdf`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#FF5B00] hover:bg-orange-600 text-white text-xs font-bold rounded-lg transition shadow-2xs"
+                        >
+                          View / Download PDF
+                        </a>
                       </td>
                     </tr>
                   ))}

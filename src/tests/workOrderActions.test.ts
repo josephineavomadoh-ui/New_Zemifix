@@ -1,0 +1,241 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { NextRequest } from 'next/server';
+
+vi.hoisted(() => {
+  process.env.APP_ENV = 'test';
+  process.env.TEST_DATABASE_URL =
+    'postgresql://zemifix_app_user_test:placeholder@localhost:5432/zemifix_dev_test';
+  process.env.APP_CONTEXT_HMAC_SECRET =
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+});
+
+import { POST as transitionStatus } from '@/src/app/api/work-orders/[id]/status/route';
+import { POST as assignOrder } from '@/src/app/api/work-orders/[id]/assign/route';
+import { transitionWorkOrderStatus, assignWorkOrder } from '@/src/lib/services/workOrderService';
+import { withSecurityContext, SecurityContextInput } from '@/src/lib/services/securityContextService';
+import type { AuthenticatedUser } from '@/src/lib/auth';
+import { Prisma, PrismaClient } from '@prisma/client';
+
+describe('Stage 3 Increment 2B2B: Secure Work Order Status & Assignment Endpoints', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.env = { ...originalEnv };
+    process.env.APP_ENV = 'test';
+    process.env.TEST_DATABASE_URL =
+      'postgresql://zemifix_app_user_test:placeholder@localhost:5432/zemifix_dev_test';
+    process.env.APP_CONTEXT_HMAC_SECRET =
+      'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  function createMockUser(overrides?: Partial<AuthenticatedUser>): AuthenticatedUser {
+    return {
+      id: '11111111-1111-4111-8111-111111111111',
+      name: 'John Supervisor',
+      email: 'supervisor@zemifix.com',
+      roleId: '22222222-2222-4222-8222-222222222222',
+      role: {
+        id: '22222222-2222-4222-8222-222222222222',
+        name: 'Maintenance Supervisor',
+        permissions: [
+          {
+            permission: {
+              resource: 'work_order',
+              action: 'update',
+            },
+          },
+        ],
+      },
+      branchId: '33333333-3333-4333-8333-333333333333',
+      branch: {
+        id: '33333333-3333-4333-8333-333333333333',
+        name: 'HQ Branch',
+        code: 'HQ-ACC',
+        type: 'HeadOffice',
+        path: '/HQ-ACC/',
+      },
+      departmentId: '44444444-4444-4444-8444-444444444444',
+      accessScope: 'Branch',
+      isActive: true,
+      locale: 'en-GH',
+      ...overrides,
+    };
+  }
+
+  function createMockTx() {
+    const defaultWo = {
+      id: '55555555-5555-4555-8555-555555555555',
+      workOrderNumber: 'WO-2026-000001',
+      status: 'OPEN',
+      actualStart: null,
+      assignedUserId: null,
+      supervisorUserId: '11111111-1111-4111-8111-111111111111',
+      branchId: '33333333-3333-4333-8333-333333333333',
+      departmentId: '44444444-4444-4444-8444-444444444444',
+      customerId: null,
+      siteId: null,
+      deletedAt: null,
+      updatedAt: new Date(),
+    };
+
+    const targetUser = {
+      id: '66666666-6666-4666-8666-666666666666',
+      name: 'Tech Person',
+      isActive: true,
+      deletedAt: null,
+    };
+
+    const mockTemplate = {
+      id: 'tmpl-1',
+      isActive: true,
+      titleTemplate: 'Notification {{workOrderNumber}}',
+      bodyTemplate: 'Body {{fromStatus}} to {{toStatus}}',
+      emailSubject: 'Subject {{workOrderNumber}}',
+      emailBody: 'Email Body',
+    };
+
+    const mockPreference = {
+      inAppEnabled: true,
+      emailEnabled: false,
+    };
+
+    const tx = {
+      $queryRaw: vi.fn(async (strings: TemplateStringsArray) => {
+        const sql = strings.join('?');
+        if (sql.includes('pg_backend_pid()')) {
+          return [
+            {
+              backendPid: '1234',
+              transactionId: '5678',
+              sessionUser: 'zemifix_app_user',
+              currentDatabase: 'zemifix_dev',
+            },
+          ];
+        }
+        if (sql.includes('FOR UPDATE')) {
+          return [defaultWo];
+        }
+        return [];
+      }),
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      workOrderChecklistItem: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      workOrder: {
+        findUnique: vi.fn().mockResolvedValue(defaultWo),
+        update: vi.fn().mockImplementation(async ({ data }) => ({
+          ...defaultWo,
+          ...data,
+          updatedAt: new Date(),
+        })),
+      },
+      user: {
+        findUnique: vi.fn().mockResolvedValue(targetUser),
+        findFirst: vi.fn().mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', branchId: '33333333-3333-4333-8333-333333333333', accessScope: 'Company' }),
+      },
+      notificationTemplate: {
+        findUnique: vi.fn().mockResolvedValue(mockTemplate),
+        findFirst: vi.fn().mockResolvedValue(mockTemplate),
+      },
+      notificationPreference: {
+        findUnique: vi.fn().mockResolvedValue(mockPreference),
+      },
+      notification: {
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findUnique: vi.fn().mockResolvedValue({ id: 'notif-1' }),
+      },
+      auditLog: {
+        create: vi.fn().mockResolvedValue({ id: 'audit-1' }),
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    const client = {
+      $transaction: vi.fn(async (callback) => callback(tx)),
+    } as unknown as PrismaClient;
+
+    return { client, tx, defaultWo };
+  }
+
+  describe('1. POST /api/work-orders/[id]/status', () => {
+    it('1.1 Executes transitionWorkOrderStatus cleanly inside signed transaction', async () => {
+      const user = createMockUser();
+      const { client, tx } = createMockTx();
+
+      const secContext: SecurityContextInput = {
+        userId: user.id,
+        branchId: user.branchId,
+        branchPath: user.branch.path ?? '',
+        departmentId: user.departmentId,
+        accessScope: 'Branch',
+        realm: 'STAFF',
+      };
+
+      const result = await withSecurityContext(client, secContext, async (activeTx) => {
+        return await transitionWorkOrderStatus(
+          user,
+          { workOrderId: '55555555-5555-4555-8555-555555555555', newStatus: 'IN_PROGRESS', reason: 'Started work' },
+          activeTx
+        );
+      });
+
+      expect(result.status).toBe('IN_PROGRESS');
+      expect(tx.workOrder.update).toHaveBeenCalled();
+    });
+
+    it('1.2 Rejects unauthenticated request on status transition (HTTP 401)', async () => {
+      const req = new NextRequest('http://localhost:3000/api/work-orders/55555555-5555-4555-8555-555555555555/status', {
+        method: 'POST',
+        body: JSON.stringify({ newStatus: 'IN_PROGRESS' }),
+      });
+
+      const res = await transitionStatus(req, { params: Promise.resolve({ id: '55555555-5555-4555-8555-555555555555' }) });
+      expect(res.status).toBe(401);
+      const json = await res.json();
+      expect(json.error).toMatch(/UNAUTHORIZED: Active staff session required/i);
+    });
+  });
+
+  describe('2. POST /api/work-orders/[id]/assign', () => {
+    it('2.1 Executes assignWorkOrder cleanly inside signed transaction', async () => {
+      const user = createMockUser();
+      const { client, tx } = createMockTx();
+
+      const secContext: SecurityContextInput = {
+        userId: user.id,
+        branchId: user.branchId,
+        branchPath: user.branch.path ?? '',
+        departmentId: user.departmentId,
+        accessScope: 'Branch',
+        realm: 'STAFF',
+      };
+
+      const result = await withSecurityContext(client, secContext, async (activeTx) => {
+        return await assignWorkOrder(
+          user,
+          { workOrderId: '55555555-5555-4555-8555-555555555555', assignedUserId: '66666666-6666-4666-8666-666666666666' },
+          activeTx
+        );
+      });
+
+      expect(result.assignedUserId).toBe('66666666-6666-4666-8666-666666666666');
+      expect(tx.workOrder.update).toHaveBeenCalled();
+    });
+
+    it('2.2 Rejects unauthenticated request on assignment (HTTP 401)', async () => {
+      const req = new NextRequest('http://localhost:3000/api/work-orders/55555555-5555-4555-8555-555555555555/assign', {
+        method: 'POST',
+        body: JSON.stringify({ assignedUserId: '66666666-6666-4666-8666-666666666666' }),
+      });
+
+      const res = await assignOrder(req, { params: Promise.resolve({ id: '55555555-5555-4555-8555-555555555555' }) });
+      expect(res.status).toBe(401);
+      const json = await res.json();
+      expect(json.error).toMatch(/UNAUTHORIZED: Active staff session required/i);
+    });
+  });
+});

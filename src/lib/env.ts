@@ -25,3 +25,17 @@ export function validateEnvironment() {
   }
   return result.success ? result.data : process.env;
 }
+
+export function isDevLike(): boolean {
+  const appEnv = process.env.APP_ENV?.trim().toLowerCase();
+  if (appEnv === 'development' || appEnv === 'local' || appEnv === 'test') {
+    return true;
+  }
+  if (!appEnv) {
+    const nodeEnv = process.env.NODE_ENV?.trim().toLowerCase();
+    if (nodeEnv === 'development' || nodeEnv === 'test') {
+      return true;
+    }
+  }
+  return false;
+}

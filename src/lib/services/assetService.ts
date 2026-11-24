@@ -1,13 +1,50 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '../prisma';
 import { AuthenticatedUser } from '../auth';
 import { generateUuidV7 } from '../uuid';
 import { appendAuditLog } from './auditService';
+import { withSecurityContext, SecurityAccessScope } from './securityContextService';
+
+export interface AssetCreateParams {
+  assetTag: string;
+  serialNumber?: string;
+  barcode?: string;
+  name: string;
+  description?: string;
+  ownershipType?: 'COMPANY_OWNED' | 'CUSTOMER_OWNED' | 'LEASED';
+  managingOrgType?: 'INTERNAL_BRANCH' | 'EXTERNAL_CONTRACTOR';
+  ownerCustomerId?: string | null;
+  managingBranchId?: string | null;
+  managingCustomerId?: string | null;
+  categoryId: string;
+  branchId?: string | null;
+  locationId?: string | null;
+  physicalSiteCustomerId?: string | null;
+  siteId?: string | null;
+  responsibleUserId?: string | null;
+  responsibleDepartmentId?: string | null;
+  custodianUserId?: string | null;
+  parentAssetId?: string | null;
+  criticality?: number;
+  manufacturer?: string;
+  modelNumber?: string;
+  purchaseCost?: number;
+  imageUrl?: string | null;
+  createdByUserId: string;
+}
 
 /**
  * Resolves scoped asset query filters based on user accessScope.
  */
-export async function getScopedAssetFilter(user: AuthenticatedUser) {
+export async function getScopedAssetFilter(
+  user: AuthenticatedUser,
+  tx?: Prisma.TransactionClient
+) {
+  if (!tx) {
+    return withAssetContext(user, (activeTx) =>
+      getScopedAssetFilter(user, activeTx)
+    );
+  }
+
   const now = new Date();
 
   if (!user || !user.accessScope || typeof user.accessScope !== 'string') {
@@ -16,7 +53,7 @@ export async function getScopedAssetFilter(user: AuthenticatedUser) {
 
   const accessScope = user.accessScope;
 
-  const grants = await prisma.userScopeGrant.findMany({
+  const grants = await tx.userScopeGrant.findMany({
     where: {
       userId: user.id,
       OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
@@ -28,7 +65,7 @@ export async function getScopedAssetFilter(user: AuthenticatedUser) {
   const grantedDeptIds = grants.map((g) => g.departmentId).filter((id): id is string => Boolean(id));
 
   const userBranch = user.branchId
-    ? await prisma.branch.findUnique({ where: { id: user.branchId }, select: { path: true } })
+    ? await tx.branch.findUnique({ where: { id: user.branchId }, select: { path: true } })
     : null;
 
   if (accessScope === 'Company') {
@@ -44,7 +81,7 @@ export async function getScopedAssetFilter(user: AuthenticatedUser) {
 
     let grantedBranchPaths: string[] = [];
     if (grantedBranchIds.length > 0) {
-      const gBranches = await prisma.branch.findMany({
+      const gBranches = await tx.branch.findMany({
         where: { id: { in: grantedBranchIds } },
         select: { path: true },
       });
@@ -105,34 +142,61 @@ export async function getScopedAssetFilter(user: AuthenticatedUser) {
   throw new Error(`UNSUPPORTED_ACCESS_SCOPE: Access scope "${accessScope}" is unknown.`);
 }
 
-export async function createAsset(params: {
-  assetTag: string;
-  serialNumber?: string;
-  barcode?: string;
-  name: string;
-  description?: string;
-  ownershipType?: 'COMPANY_OWNED' | 'CUSTOMER_OWNED' | 'LEASED';
-  managingOrgType?: 'INTERNAL_BRANCH' | 'EXTERNAL_CONTRACTOR';
-  ownerCustomerId?: string | null;
-  managingBranchId?: string | null;
-  managingCustomerId?: string | null;
-  categoryId: string;
-  branchId?: string | null;
-  locationId?: string | null;
-  physicalSiteCustomerId?: string | null;
-  siteId?: string | null;
-  responsibleUserId?: string | null;
-  responsibleDepartmentId?: string | null;
-  custodianUserId?: string | null;
-  parentAssetId?: string | null;
-  criticality?: number;
-  manufacturer?: string;
-  modelNumber?: string;
-  purchaseCost?: number;
-  imageUrl?: string | null;
-  createdByUserId: string;
-}) {
-  return await prisma.$transaction(async (tx: any) => {
+function withAssetContext<T>(
+  user: AuthenticatedUser,
+  callback: (tx: Prisma.TransactionClient) => Promise<T>,
+  existingTx?: Prisma.TransactionClient
+): Promise<T> {
+  if (!user?.id) {
+    throw new Error('SECURITY_CONTEXT_INVALID: A valid staff user context is required.');
+  }
+
+  return withSecurityContext(
+    {
+      userId: user.id,
+      branchId: user.branchId,
+      branchPath: user.branch?.path ?? '',
+      departmentId: user.departmentId,
+      accessScope: (user.accessScope as SecurityAccessScope) ?? 'Own',
+      realm: 'STAFF',
+    },
+    callback,
+    existingTx
+  );
+}
+
+export async function createAsset(
+  userOrParams: AuthenticatedUser | AssetCreateParams,
+  paramsOrTx?: AssetCreateParams | Prisma.TransactionClient,
+  existingTx?: Prisma.TransactionClient
+) {
+  let user: AuthenticatedUser;
+  let params: AssetCreateParams;
+  let txClient: Prisma.TransactionClient | undefined = existingTx;
+
+  if ('assetTag' in userOrParams) {
+    params = userOrParams as AssetCreateParams;
+    user = {
+      id: params.createdByUserId,
+      name: 'System User',
+      email: 'system@zemifix.local',
+      roleId: '00000000-0000-0000-0000-000000000000',
+      role: { id: '00000000-0000-0000-0000-000000000000', name: 'Admin' },
+      branchId: params.branchId ?? params.managingBranchId ?? '00000000-0000-0000-0000-000000000000',
+      branch: { id: params.branchId ?? '00000000-0000-0000-0000-000000000000', name: 'Branch', code: 'BR', type: 'Branch' },
+      accessScope: 'Company',
+      isActive: true,
+      locale: 'en-GH',
+    };
+    if (paramsOrTx && typeof paramsOrTx === 'object' && '$queryRaw' in paramsOrTx) {
+      txClient = paramsOrTx as Prisma.TransactionClient;
+    }
+  } else {
+    user = userOrParams;
+    params = paramsOrTx as AssetCreateParams;
+  }
+
+  return await withAssetContext(user, async (tx) => {
     const assetUuid = generateUuidV7();
 
     const managingOrgType = params.managingOrgType ?? 'INTERNAL_BRANCH';
@@ -192,11 +256,11 @@ export async function createAsset(params: {
     });
 
     return asset;
-  });
+  }, txClient);
 }
 
 export async function relocateAsset(
-  tx: any,
+  tx: Prisma.TransactionClient,
   params: {
     assetId: string;
     toLocationId?: string | null;
@@ -463,7 +527,7 @@ export async function relocateAsset(
 }
 
 export async function updateAssetStatus(
-  tx: any,
+  tx: Prisma.TransactionClient,
   params: {
     assetId: string;
     newStatus: 'OPERATIONAL' | 'DEGRADED' | 'DOWN' | 'IN_MAINTENANCE' | 'STANDBY' | 'RETIRED' | 'DISPOSED';
@@ -498,6 +562,4 @@ export async function updateAssetStatus(
     resourceId: asset.id,
     payload: { fromStatus, toStatus: params.newStatus, reason: params.reason },
   });
-
-  return { statusHistoryId: statusHistUuid, fromStatus, toStatus: params.newStatus };
 }

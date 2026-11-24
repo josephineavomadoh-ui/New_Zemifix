@@ -1,39 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs/promises';
 import path from 'path';
-import { getCurrentUser } from '@/src/lib/auth';
-import { prisma } from '@/src/lib/prisma';
-import { getScopedWorkOrderFilter } from '@/src/lib/services/workOrderService';
+import { withApiSecurity } from '@/src/lib/authWrapper';
+import { addWorkOrderAttachmentMetadata } from '@/src/lib/services/workOrderService';
 
 const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
-export async function POST(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    let user;
-    try {
-      user = await getCurrentUser(req);
-    } catch {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
+export const POST = withApiSecurity(
+  { realm: 'STAFF', resource: 'work_order', action: 'update' },
+  async (req, { user, tx, params }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
-    const { id } = await params;
-
-    // Verify the work order exists and is accessible within the user's scope
-    const scopeFilter = await getScopedWorkOrderFilter(user);
-    const workOrder = await prisma.workOrder.findFirst({
-      where: { id, ...scopeFilter },
-    });
-
-    if (!workOrder) {
-      return NextResponse.json({ error: 'Work order not found' }, { status: 404 });
+    const { id } = params ?? {};
+    if (!id) {
+      return NextResponse.json({ error: 'Work order ID required' }, { status: 400 });
     }
 
     const formData = await req.formData();
@@ -77,26 +60,23 @@ export async function POST(
 
     const fileUrl = `work-orders/${fileName}`;
 
-    // Construct display name with evidence prefix and caption if provided
     const displayLabel = caption.trim()
       ? `[${evidenceType}] ${caption.trim()}`
       : `[${evidenceType}] ${file.name}`;
 
-    const attachment = await prisma.workOrderAttachment.create({
-      data: {
+    const attachment = await addWorkOrderAttachmentMetadata(
+      user,
+      {
         workOrderId: id,
-        uploaderUserId: user.id,
         fileName: displayLabel.substring(0, 200),
         fileUrl,
         fileSize: fileBuffer.length,
         mimeType,
         isCustomerVisible: false,
       },
-    });
+      tx
+    );
 
     return NextResponse.json({ attachment }, { status: 201 });
-  } catch (err: any) {
-    console.error('[API /api/work-orders/[id]/attachments POST error]:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
-}
+);

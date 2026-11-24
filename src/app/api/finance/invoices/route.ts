@@ -1,48 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
-import { createInvoice } from '@/src/lib/services/billingService';
-import { prisma } from '@/src/lib/prisma';
+import { withApiSecurity } from '@/src/lib/authWrapper';
+import { createInvoice, getInvoices } from '@/src/lib/services/billingService';
 
-export async function GET(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
+export const GET = withApiSecurity(
+  { realm: 'STAFF', resource: 'invoice', action: 'read' },
+  async (req, { user, tx }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
-    const invoices = await prisma.invoice.findMany({
-      where: { deletedAt: null },
-      include: {
-        customer: { select: { name: true, customerNumber: true } },
-        site: { select: { name: true, siteCode: true } },
-        lines: true,
-        creditNotes: true,
-        allocations: { include: { payment: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const { searchParams } = new URL(req.url);
+    const status = searchParams.get('status') ?? undefined;
+    const customerId = searchParams.get('customerId') ?? undefined;
+
+    const invoices = await getInvoices(user, { status, customerId }, tx);
 
     return NextResponse.json({ invoices, count: invoices.length });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to fetch invoices' }, { status: 500 });
   }
-}
+);
 
-export async function POST(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
+export const POST = withApiSecurity(
+  { realm: 'STAFF', resource: 'invoice', action: 'create' },
+  async (req, { user, tx }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
     const body = await req.json();
     const invoice = await createInvoice(user, {
       ...body,
       dueDate: new Date(body.dueDate),
-    });
+    }, tx);
 
     return NextResponse.json({ success: true, invoice }, { status: 201 });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to create draft invoice' }, { status: 400 });
   }
-}
+);

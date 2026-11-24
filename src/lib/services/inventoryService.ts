@@ -1,10 +1,32 @@
 import { Prisma } from '@prisma/client';
-import { prisma } from '../prisma';
 import { AuthenticatedUser } from '../auth';
 import { generateUuidV7 } from '../uuid';
 import { appendAuditLog } from './auditService';
 import { notifyStaff } from './notificationService';
-import { getScopedAssetFilter } from './assetService';
+import { withSecurityContext, SecurityAccessScope } from './securityContextService';
+
+function withInventoryContext<T>(
+  user: AuthenticatedUser,
+  callback: (tx: Prisma.TransactionClient) => Promise<T>,
+  existingTx?: Prisma.TransactionClient
+): Promise<T> {
+  if (!user?.id) {
+    throw new Error('SECURITY_CONTEXT_INVALID: A valid staff user context is required.');
+  }
+
+  return withSecurityContext(
+    {
+      userId: user.id,
+      branchId: user.branchId,
+      branchPath: user.branch?.path ?? '',
+      departmentId: user.departmentId,
+      accessScope: (user.accessScope as SecurityAccessScope) ?? 'Own',
+      realm: 'STAFF',
+    },
+    callback,
+    existingTx
+  );
+}
 
 /**
  * 1. MASTER PARTS CATALOG MANAGEMENT
@@ -28,9 +50,10 @@ export async function createPart(
     reorderLevel?: number;
     reorderQuantity?: number;
     standardCost?: number;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
+  return await withInventoryContext(user, async (tx) => {
     const partUuid = generateUuidV7();
 
     const part = await tx.part.create({
@@ -66,29 +89,36 @@ export async function createPart(
     });
 
     return part;
-  });
+  }, existingTx);
 }
 
-export async function getParts(search?: string, category?: string) {
-  return await prisma.part.findMany({
-    where: {
-      deletedAt: null,
-      ...(category ? { category } : {}),
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: 'insensitive' } },
-              { partNumber: { contains: search, mode: 'insensitive' } },
-              { barcode: { contains: search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
-    },
-    include: {
-      stocks: { include: { store: { select: { name: true, code: true } } } },
-    },
-    orderBy: { partNumber: 'asc' },
-  });
+export async function getParts(
+  user: AuthenticatedUser,
+  search?: string,
+  category?: string,
+  existingTx?: Prisma.TransactionClient
+) {
+  return await withInventoryContext(user, async (tx) => {
+    return tx.part.findMany({
+      where: {
+        deletedAt: null,
+        ...(category ? { category } : {}),
+        ...(search
+          ? {
+              OR: [
+                { name: { contains: search, mode: 'insensitive' } },
+                { partNumber: { contains: search, mode: 'insensitive' } },
+                { barcode: { contains: search, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
+      },
+      include: {
+        stocks: { include: { store: { select: { name: true, code: true } } } },
+      },
+      orderBy: { partNumber: 'asc' },
+    });
+  }, existingTx);
 }
 
 /**
@@ -104,9 +134,10 @@ export async function createStore(
     departmentId?: string | null;
     isMain?: boolean;
     managerUserId?: string | null;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
+  return await withInventoryContext(user, async (tx) => {
     const storeUuid = generateUuidV7();
     const branchId = params.branchId ?? user.branchId;
 
@@ -133,30 +164,32 @@ export async function createStore(
     });
 
     return store;
-  });
+  }, existingTx);
 }
 
-export async function getStores(user: AuthenticatedUser) {
-  return await prisma.store.findMany({
-    where: {
-      deletedAt: null,
-      branchId: user.accessScope === 'Company' ? undefined : user.branchId,
-    },
-    include: {
-      branch: { select: { name: true, code: true } },
-      department: { select: { name: true, code: true } },
-      managerUser: { select: { name: true, email: true } },
-      stocks: { include: { part: { select: { partNumber: true, name: true, uom: true } } } },
-    },
-    orderBy: { code: 'asc' },
-  });
+export async function getStores(user: AuthenticatedUser, existingTx?: Prisma.TransactionClient) {
+  return await withInventoryContext(user, async (tx) => {
+    return tx.store.findMany({
+      where: {
+        deletedAt: null,
+        branchId: user.accessScope === 'Company' ? undefined : user.branchId,
+      },
+      include: {
+        branch: { select: { name: true, code: true } },
+        department: { select: { name: true, code: true } },
+        managerUser: { select: { name: true, email: true } },
+        stocks: { include: { part: { select: { partNumber: true, name: true, uom: true } } } },
+      },
+      orderBy: { code: 'asc' },
+    });
+  }, existingTx);
 }
 
 /**
  * 3. AUTHORITATIVE APPEND-ONLY STOCK TRANSACTION LEDGER & WAC VALUATION
  */
 export async function postStockTransaction(
-  tx: any,
+  tx: Prisma.TransactionClient,
   params: {
     transactionType: 'OPENING_BALANCE' | 'RECEIPT' | 'ISSUE' | 'TRANSFER_OUT' | 'TRANSFER_IN' | 'ADJUSTMENT_IN' | 'ADJUSTMENT_OUT' | 'RETURN_IN' | 'RETURN_OUT' | 'REVERSAL';
     storeId: string;
@@ -231,8 +264,6 @@ export async function postStockTransaction(
 
   if (isInflow) {
     newQty = currQty.add(txQty);
-    // Weighted Average Cost (WAC) Formula:
-    // New WAC = ((Current Qty * Current WAC) + (Received Qty * Received Unit Cost)) / (Current Qty + Received Qty)
     if (newQty.gt(0)) {
       const currentTotalValue = currQty.mul(currWac);
       const incomingTotalValue = txQty.mul(txCost);
@@ -245,9 +276,9 @@ export async function postStockTransaction(
       throw new Error(`INSUFFICIENT_STOCK: Available stock (${currQty}) is less than requested outflow quantity (${txQty}).`);
     }
     newQty = currQty.sub(txQty);
-    newWac = currWac; // Outflows do not alter the store WAC
+    newWac = currWac;
   } else if (params.transactionType === 'REVERSAL') {
-    newQty = currQty.add(txQty); // Reversal restores quantity
+    newQty = currQty.add(txQty);
     newWac = currWac;
   }
 
@@ -277,7 +308,7 @@ export async function postStockTransaction(
   const txnUuid = generateUuidV7();
   const txTotalCost = txQty.mul(txCost);
 
-  const txn = await tx.$executeRaw`
+  await tx.$executeRaw`
     INSERT INTO "stock_transactions" (
       "id", "transactionRef", "transactionType", "storeId", "partId",
       "quantity", "unitCost", "totalCost", "balanceAfter", "wacAfter",
@@ -331,13 +362,13 @@ export async function issueMaterialToWorkOrder(
     partId: string;
     quantity: number;
     unitCost?: number;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
+  return await withInventoryContext(user, async (tx) => {
     const wo = await tx.workOrder.findUnique({ where: { id: params.workOrderId } });
     if (!wo) throw new Error('WORK_ORDER_NOT_FOUND: Work order does not exist.');
 
-    // Fetch store stock to obtain current store WAC if unitCost is not specified
     const stock = await tx.stock.findUnique({
       where: { storeId_partId: { storeId: params.storeId, partId: params.partId } },
       include: { part: true },
@@ -347,7 +378,6 @@ export async function issueMaterialToWorkOrder(
 
     const cost = params.unitCost ?? Number(stock.averageUnitCost);
 
-    // Post ISSUE transaction to authoritative inventory ledger
     const txnResult = await postStockTransaction(tx, {
       transactionType: 'ISSUE',
       storeId: params.storeId,
@@ -359,7 +389,6 @@ export async function issueMaterialToWorkOrder(
       actingUserId: user.id,
     });
 
-    // Update WorkOrderPart record
     const existingPart = await tx.workOrderPart.findFirst({
       where: { workOrderId: wo.id, partId: params.partId },
     });
@@ -388,7 +417,6 @@ export async function issueMaterialToWorkOrder(
       });
     }
 
-    // Update WorkOrder totalCost
     const issueCost = new Prisma.Decimal(params.quantity).mul(new Prisma.Decimal(cost));
     await tx.workOrder.update({
       where: { id: wo.id },
@@ -398,7 +426,7 @@ export async function issueMaterialToWorkOrder(
     });
 
     return txnResult;
-  });
+  }, existingTx);
 }
 
 /**
@@ -412,18 +440,18 @@ export async function executeStoreTransfer(
     partId: string;
     quantity: number;
     notes?: string;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
   if (params.sourceStoreId === params.destinationStoreId) {
     throw new Error('INVALID_TRANSFER: Source and destination warehouses must be different.');
   }
 
-  return await prisma.$transaction(async (tx: any) => {
+  return await withInventoryContext(user, async (tx) => {
     const groupId = generateUuidV7();
     const ts = Date.now();
     const transferNumber = `TRF-${new Date().getFullYear()}-${ts.toString().slice(-6)}`;
 
-    // Fetch source store stock WAC
     const sourceStock = await tx.stock.findUnique({
       where: { storeId_partId: { storeId: params.sourceStoreId, partId: params.partId } },
     });
@@ -431,7 +459,6 @@ export async function executeStoreTransfer(
     if (!sourceStock) throw new Error('SOURCE_STOCK_NOT_FOUND: Item does not exist in source warehouse.');
     const cost = Number(sourceStock.averageUnitCost);
 
-    // 1. Post TRANSFER_OUT from Source Store
     const outTxn = await postStockTransaction(tx, {
       transactionType: 'TRANSFER_OUT',
       storeId: params.sourceStoreId,
@@ -443,7 +470,6 @@ export async function executeStoreTransfer(
       actingUserId: user.id,
     });
 
-    // 2. Post TRANSFER_IN to Destination Store
     const inTxn = await postStockTransaction(tx, {
       transactionType: 'TRANSFER_IN',
       storeId: params.destinationStoreId,
@@ -455,7 +481,6 @@ export async function executeStoreTransfer(
       actingUserId: user.id,
     });
 
-    // Create StoreTransfer record
     const transfer = await tx.storeTransfer.create({
       data: {
         id: generateUuidV7(),
@@ -483,7 +508,7 @@ export async function executeStoreTransfer(
     });
 
     return { transfer, outTxn, inTxn };
-  });
+  }, existingTx);
 }
 
 /**
@@ -498,9 +523,10 @@ export async function returnMaterialFromWorkOrder(
     quantity: number;
     unitCost?: number;
     reason?: string;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
+  return await withInventoryContext(user, async (tx) => {
     const wo = await tx.workOrder.findUnique({ where: { id: params.workOrderId } });
     if (!wo) throw new Error('WORK_ORDER_NOT_FOUND: Work order does not exist.');
 
@@ -520,7 +546,6 @@ export async function returnMaterialFromWorkOrder(
 
     const cost = params.unitCost ?? Number(woPart.unitCost);
 
-    // Post RETURN_IN transaction to authoritative inventory ledger
     const txnResult = await postStockTransaction(tx, {
       transactionType: 'RETURN_IN',
       storeId: params.storeId,
@@ -532,7 +557,6 @@ export async function returnMaterialFromWorkOrder(
       actingUserId: user.id,
     });
 
-    // Update WorkOrderPart.quantityReturned
     await tx.workOrderPart.update({
       where: { id: woPart.id },
       data: {
@@ -540,7 +564,6 @@ export async function returnMaterialFromWorkOrder(
       },
     });
 
-    // Credit WorkOrder.totalCost
     const returnCredit = new Prisma.Decimal(params.quantity).mul(new Prisma.Decimal(cost));
     await tx.workOrder.update({
       where: { id: wo.id },
@@ -550,14 +573,14 @@ export async function returnMaterialFromWorkOrder(
     });
 
     return txnResult;
-  });
+  }, existingTx);
 }
 
 /**
  * 7. STOCK RESERVATION & RELEASE
  */
 export async function reserveStockForWorkOrder(
-  tx: any,
+  tx: Prisma.TransactionClient,
   params: {
     storeId: string;
     partId: string;
@@ -597,9 +620,10 @@ export async function reverseStockTransaction(
   params: {
     originalTransactionRef: string;
     reason: string;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
+  return await withInventoryContext(user, async (tx) => {
     const origTxn = await tx.stockTransaction.findUnique({
       where: { transactionRef: params.originalTransactionRef },
     });
@@ -609,7 +633,6 @@ export async function reverseStockTransaction(
     const reversalQty = Number(origTxn.quantity);
     const reversalCost = Number(origTxn.unitCost);
 
-    // Post REVERSAL transaction (does NOT edit original record)
     const result = await postStockTransaction(tx, {
       transactionType: 'REVERSAL',
       storeId: origTxn.storeId,
@@ -630,7 +653,7 @@ export async function reverseStockTransaction(
     });
 
     return result;
-  });
+  }, existingTx);
 }
 
 /**
@@ -643,9 +666,10 @@ export async function createStockAdjustment(
     partId: string;
     countedQuantity: number;
     reason: string;
-  }
+  },
+  existingTx?: Prisma.TransactionClient
 ) {
-  return await prisma.$transaction(async (tx: any) => {
+  return await withInventoryContext(user, async (tx) => {
     const stock = await tx.stock.findUnique({
       where: { storeId_partId: { storeId: params.storeId, partId: params.partId } },
     });
@@ -662,7 +686,6 @@ export async function createStockAdjustment(
       throw new Error('NO_VARIANCE: Counted quantity matches system quantity; no adjustment needed.');
     }
 
-    // Post adjustment transaction to inventory ledger
     const txnResult = await postStockTransaction(tx, {
       transactionType: adjustmentType as any,
       storeId: params.storeId,
@@ -674,53 +697,55 @@ export async function createStockAdjustment(
     });
 
     return txnResult;
-  });
+  }, existingTx);
 }
 
 /**
  * 10. REORDER MANAGEMENT & LOW STOCK RECOMMENDATIONS
  */
-export async function getReorderRecommendations(user: AuthenticatedUser) {
-  const parts = await prisma.part.findMany({
-    where: { deletedAt: null, isActive: true },
-    include: {
-      stocks: {
-        include: { store: { select: { name: true, code: true } } },
+export async function getReorderRecommendations(user: AuthenticatedUser, existingTx?: Prisma.TransactionClient) {
+  return await withInventoryContext(user, async (tx) => {
+    const parts = await tx.part.findMany({
+      where: { deletedAt: null, isActive: true },
+      include: {
+        stocks: {
+          include: { store: { select: { name: true, code: true } } },
+        },
       },
-    },
-  });
+    });
 
-  const recommendations = [];
+    const recommendations = [];
 
-  for (const part of parts) {
-    const reorderLevel = Number(part.reorderLevel);
-    if (reorderLevel <= 0) continue;
+    for (const part of parts) {
+      const reorderLevel = Number(part.reorderLevel);
+      if (reorderLevel <= 0) continue;
 
-    for (const stock of part.stocks) {
-      const onHand = Number(stock.quantityOnHand);
-      const reserved = Number(stock.quantityReserved);
-      const onOrder = Number(stock.quantityOnOrder);
-      const available = onHand - reserved + onOrder;
+      for (const stock of part.stocks) {
+        const onHand = Number(stock.quantityOnHand);
+        const reserved = Number(stock.quantityReserved);
+        const onOrder = Number(stock.quantityOnOrder);
+        const available = onHand - reserved + onOrder;
 
-      if (available <= reorderLevel) {
-        recommendations.push({
-          partId: part.id,
-          partNumber: part.partNumber,
-          partName: part.name,
-          category: part.category,
-          storeId: stock.storeId,
-          storeName: stock.store.name,
-          quantityOnHand: onHand,
-          quantityReserved: reserved,
-          quantityAvailable: available,
-          reorderLevel,
-          reorderQuantity: Number(part.reorderQuantity),
-          suggestedOrderQty: Math.max(Number(part.reorderQuantity), reorderLevel - available + Number(part.minStockLevel)),
-          unitCost: Number(stock.averageUnitCost),
-        });
+        if (available <= reorderLevel) {
+          recommendations.push({
+            partId: part.id,
+            partNumber: part.partNumber,
+            partName: part.name,
+            category: part.category,
+            storeId: stock.storeId,
+            storeName: stock.store.name,
+            quantityOnHand: onHand,
+            quantityReserved: reserved,
+            quantityAvailable: available,
+            reorderLevel,
+            reorderQuantity: Number(part.reorderQuantity),
+            suggestedOrderQty: Math.max(Number(part.reorderQuantity), reorderLevel - available + Number(part.minStockLevel)),
+            unitCost: Number(stock.averageUnitCost),
+          });
+        }
       }
     }
-  }
 
-  return recommendations;
+    return recommendations;
+  }, existingTx);
 }

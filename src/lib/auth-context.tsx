@@ -11,6 +11,12 @@ export interface UserSession {
   role: {
     id: string;
     name: string;
+    permissions?: Array<{
+      permission: {
+        resource: string;
+        action: string;
+      };
+    }>;
   };
   branch: {
     id: string;

@@ -1,0 +1,4 @@
+- [x] Redesign and implement ZemiFix Finance Dashboard
+- [x] Audit Manager Dashboard existing implementation
+- [x] Complete and polish Manager Dashboard features (backlog ageing, SLA metrics, activity stream)
+- [x] Verify type checking and component tests (all 25 tests passed)

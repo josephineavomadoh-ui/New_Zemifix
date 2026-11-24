@@ -174,6 +174,23 @@ export function AppShell({ children }: AppShellProps) {
 
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebarMode, setSidebarMode] = useState<'facility' | 'contractor' | 'combined'>('facility');
+
+  React.useEffect(() => {
+    fetch('/api/organization/company')
+      .then((res) => res.json())
+      .then((result) => {
+        const comp = result?.data;
+        if (comp?.modes) {
+          const fac = comp.modes.facility ?? true;
+          const con = comp.modes.contractor ?? true;
+          if (fac && con) setSidebarMode('combined');
+          else if (con) setSidebarMode('contractor');
+          else setSidebarMode('facility');
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   if (isNested) return <>{children}</>;
 
@@ -195,8 +212,9 @@ export function AppShell({ children }: AppShellProps) {
         {/* Sidebar */}
         <AppSidebar
           currentPath={pathname}
-          user={sidebarUser}
+          user={user ?? sidebarUser}
           onLogout={() => void logout()}
+          mode={sidebarMode}
           collapsed={collapsed}
           onToggleCollapse={() => setCollapsed((v) => !v)}
           mobileOpen={mobileOpen}

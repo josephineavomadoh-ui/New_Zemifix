@@ -1,37 +1,43 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import Link from 'next/link';
 import {
   Activity,
+  ArrowRightLeft,
   BarChart3,
   Boxes,
+  Building,
   Building2,
   CalendarCheck2,
   CalendarDays,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  CircleDollarSign,
   ClipboardList,
   FileBarChart2,
-  FileInput,
   FileText,
   Handshake,
+  Layers,
   LayoutDashboard,
   LogOut,
-  PackageSearch,
+  MapPin,
+  MessageSquareWarning,
+  PackageCheck,
   Receipt,
+  RotateCcw,
   Settings,
   ShieldCheck,
   ShoppingCart,
+  TrendingDown,
+  Truck,
   Upload,
   Users,
   Users2,
   Wrench,
-  MessageSquareWarning,
 } from 'lucide-react';
 import { ZemifixLogo } from '../ui/ZemifixLogo';
+import type { UserSession } from '@/src/lib/auth-context';
 
 /* ------------------------------------------------------------------ */
 /* Types                                                                 */
@@ -39,15 +45,55 @@ import { ZemifixLogo } from '../ui/ZemifixLogo';
 
 export interface AppSidebarUser {
   name: string;
-  role: string;
+  role:
+    | string
+    | {
+        id?: string;
+        name: string;
+        permissions?: Array<
+          | { permission: { resource: string; action: string } }
+          | { resource: string; action: string }
+        >;
+      };
   email: string;
+  permissions?: Array<
+    | { permission: { resource: string; action: string } }
+    | { resource: string; action: string }
+  >;
 }
 
-type OperatingMode = 'facility' | 'contractor';
+type OperatingMode = 'facility' | 'contractor' | 'combined';
+
+export interface NavItemPermission {
+  /** Required permission entries */
+  permissions: Array<{ resource: string; action?: string }>;
+  /**
+   * Matching logic:
+   * - 'any' (default): User must hold AT LEAST ONE of the listed permissions (OR logic).
+   *   Used when alternative permissions can grant access to a shared destination.
+   * - 'all': User must hold EVERY listed permission (AND logic).
+   *   Used when a composite set of permissions is strictly required to access a destination
+   *   (e.g., Financial Reports requiring both report:read AND invoice:read).
+   */
+  mode?: 'any' | 'all';
+}
+
+export interface NavItem {
+  name: string;
+  href: string;
+  icon: React.ElementType;
+  permission?: NavItemPermission;
+}
+
+export interface NavGroup {
+  group: string;
+  key: string;
+  items: NavItem[];
+}
 
 export interface AppSidebarProps {
   currentPath: string;
-  user: AppSidebarUser;
+  user: UserSession | AppSidebarUser;
   onLogout: () => void;
   mode?: OperatingMode;
   collapsed?: boolean;
@@ -57,122 +103,595 @@ export interface AppSidebarProps {
 }
 
 /* ------------------------------------------------------------------ */
-/* Navigation definition                                                 */
+/* Permission evaluation                                                 */
 /* ------------------------------------------------------------------ */
 
-interface NavItem {
-  name: string;
-  href: string;
-  icon: React.ElementType;
+export function canUserAccessNavItem(
+  user: UserSession | AppSidebarUser | null | undefined,
+  item: NavItem
+): boolean {
+  // 1. Unauthenticated users cannot access any item
+  if (!user) return false;
+
+  // 2. If item has no permission requirement, it's public to authenticated staff (e.g. /dashboard)
+  if (!item.permission || !item.permission.permissions || item.permission.permissions.length === 0) {
+    return true;
+  }
+
+  // 3. Extract raw permissions from user session
+  let rawPermissions: unknown = null;
+  if (typeof user.role === 'object' && user.role !== null && 'permissions' in user.role) {
+    rawPermissions = (user.role as { permissions?: unknown }).permissions;
+  } else if ('permissions' in user) {
+    rawPermissions = (user as { permissions?: unknown }).permissions;
+  }
+
+  // 4. Fail closed: missing, empty, or non-array permission data cannot access protected items
+  if (!Array.isArray(rawPermissions) || rawPermissions.length === 0) {
+    return false;
+  }
+
+  // 5. Normalize user permissions into { resource, action } pairs
+  const userPermissions: Array<{ resource: string; action: string }> = [];
+
+  for (const entry of rawPermissions) {
+    if (!entry || typeof entry !== 'object') continue;
+
+    // Format A (Prisma RolePermission join): { permission: { resource, action } }
+    if ('permission' in entry && entry.permission && typeof entry.permission === 'object') {
+      const p = entry.permission as { resource?: unknown; action?: unknown };
+      if (typeof p.resource === 'string' && p.resource.trim().length > 0) {
+        userPermissions.push({
+          resource: p.resource.trim().toLowerCase(),
+          action: typeof p.action === 'string' && p.action.trim().length > 0 ? p.action.trim().toLowerCase() : '*',
+        });
+      }
+    }
+    // Format B (Flat permission object): { resource, action }
+    else if ('resource' in entry) {
+      const p = entry as { resource?: unknown; action?: unknown };
+      if (typeof p.resource === 'string' && p.resource.trim().length > 0) {
+        userPermissions.push({
+          resource: p.resource.trim().toLowerCase(),
+          action: typeof p.action === 'string' && p.action.trim().length > 0 ? p.action.trim().toLowerCase() : '*',
+        });
+      }
+    }
+  }
+
+  // 6. Fail closed if all entries were malformed or empty
+  if (userPermissions.length === 0) {
+    return false;
+  }
+
+  // Helper to match a single required permission against user permissions
+  const checkSinglePerm = (reqPerm: { resource: string; action?: string }): boolean => {
+    if (!reqPerm || typeof reqPerm.resource !== 'string' || reqPerm.resource.trim().length === 0) {
+      return false;
+    }
+    const reqR = reqPerm.resource.trim().toLowerCase();
+    const reqA = (reqPerm.action?.trim() || '*').toLowerCase();
+
+    return userPermissions.some((up) => {
+      const resourceMatch = up.resource === '*' || up.resource === reqR;
+      const actionMatch = reqA === '*' || up.action === '*' || up.action === reqA;
+      return resourceMatch && actionMatch;
+    });
+  };
+
+  // 7. Evaluate permissions according to configured mode ('any' by default, or 'all')
+  const mode = item.permission.mode ?? 'any';
+
+  if (mode === 'all') {
+    return item.permission.permissions.every((reqPerm) => checkSinglePerm(reqPerm));
+  } else {
+    return item.permission.permissions.some((reqPerm) => checkSinglePerm(reqPerm));
+  }
 }
 
-interface NavGroup {
-  group: string;
-  key: string;
-  items: NavItem[];
-}
+/* ------------------------------------------------------------------ */
+/* Navigation definitions                                                */
+/* ------------------------------------------------------------------ */
 
-const facilityGroups: NavGroup[] = [
+export const facilityNavigationGroups: NavGroup[] = [
+  {
+    group: 'Operations',
+    key: 'operations',
+    items: [
+      {
+        name: 'Dashboard',
+        href: '/dashboard',
+        icon: LayoutDashboard,
+      },
+      {
+        name: 'Work Orders',
+        href: '/work-orders',
+        icon: ClipboardList,
+        permission: {
+          permissions: [{ resource: 'work_order', action: 'read' }],
+        },
+      },
+      {
+        name: 'Service Requests',
+        href: '/requests',
+        icon: MessageSquareWarning,
+        permission: {
+          permissions: [{ resource: 'work_order', action: 'read' }],
+        },
+      },
+      {
+        name: 'Preventive Maintenance',
+        href: '/preventive',
+        icon: CalendarCheck2,
+        permission: {
+          permissions: [{ resource: 'work_order', action: 'read' }],
+        },
+      },
+      {
+        name: 'Calendar',
+        href: '/work-orders/calendar',
+        icon: CalendarDays,
+        permission: {
+          permissions: [{ resource: 'work_order', action: 'read' }],
+        },
+      },
+    ],
+  },
+  {
+    group: 'Assets',
+    key: 'assets',
+    items: [
+      {
+        name: 'Asset Register',
+        href: '/dashboard/assets',
+        icon: Wrench,
+        permission: {
+          permissions: [{ resource: 'asset', action: 'read' }],
+        },
+      },
+      {
+        name: 'Locations',
+        href: '/dashboard/assets/locations',
+        icon: MapPin,
+        permission: {
+          permissions: [{ resource: 'asset', action: 'read' }],
+        },
+      },
+      {
+        name: 'Categories',
+        href: '/dashboard/assets/categories',
+        icon: Layers,
+        permission: {
+          permissions: [{ resource: 'asset', action: 'read' }],
+        },
+      },
+    ],
+  },
+  {
+    group: 'Inventory',
+    key: 'inventory',
+    items: [
+      {
+        name: 'Parts',
+        href: '/inventory',
+        icon: Boxes,
+        permission: {
+          permissions: [
+            { resource: 'inventory', action: 'read' },
+            { resource: 'stock', action: 'issue' },
+          ],
+          mode: 'any',
+        },
+      },
+      {
+        name: 'Stores',
+        href: '/inventory/stores',
+        icon: Building,
+        permission: {
+          permissions: [
+            { resource: 'inventory', action: 'read' },
+            { resource: 'stock', action: 'issue' },
+          ],
+          mode: 'any',
+        },
+      },
+      {
+        name: 'Stock Transactions',
+        href: '/inventory/transactions',
+        icon: ArrowRightLeft,
+        permission: {
+          permissions: [
+            { resource: 'inventory', action: 'read' },
+            { resource: 'stock', action: 'issue' },
+            { resource: 'audit', action: 'read' },
+          ],
+          mode: 'any',
+        },
+      },
+      {
+        name: 'Reorder Queue',
+        href: '/inventory/reorder',
+        icon: TrendingDown,
+        permission: {
+          permissions: [
+            { resource: 'inventory', action: 'read' },
+            { resource: 'stock', action: 'issue' },
+          ],
+          mode: 'any',
+        },
+      },
+      {
+        name: 'Returns',
+        href: '/inventory/returns',
+        icon: RotateCcw,
+        permission: {
+          permissions: [
+            { resource: 'inventory', action: 'read' },
+            { resource: 'stock', action: 'issue' },
+          ],
+          mode: 'any',
+        },
+      },
+    ],
+  },
+  {
+    group: 'Procurement',
+    key: 'procurement',
+    items: [
+      {
+        name: 'Requisitions',
+        href: '/procurement/requisitions',
+        icon: ClipboardList,
+        // Phase 1E: stock:issue removed — procurement requires inventory:read only.
+        // stock:issue (physical issuance) does not imply procurement authorisation.
+        permission: {
+          permissions: [{ resource: 'inventory', action: 'read' }],
+        },
+      },
+      {
+        name: 'Purchase Orders',
+        href: '/procurement/purchase-orders',
+        icon: FileText,
+        permission: {
+          permissions: [{ resource: 'inventory', action: 'read' }],
+        },
+      },
+      {
+        name: 'Receipts',
+        href: '/procurement/receipts',
+        icon: PackageCheck,
+        permission: {
+          permissions: [{ resource: 'inventory', action: 'read' }],
+        },
+      },
+      {
+        name: 'Suppliers',
+        href: '/procurement/vendors',
+        icon: Truck,
+        permission: {
+          permissions: [{ resource: 'inventory', action: 'read' }],
+        },
+      },
+    ],
+  },
+  {
+    group: 'Finance',
+    key: 'finance',
+    items: [
+      {
+        name: 'Invoices',
+        href: '/finance/invoices',
+        icon: Receipt,
+        permission: {
+          permissions: [
+            { resource: 'invoice', action: 'read' },
+            { resource: 'invoice', action: 'create' },
+            { resource: 'invoice', action: 'approve' },
+          ],
+          mode: 'any',
+        },
+      },
+      {
+        name: 'Financial Reports',
+        href: '/reports',
+        icon: FileBarChart2,
+        permission: {
+          permissions: [
+            { resource: 'report', action: 'read' },
+            { resource: 'invoice', action: 'read' },
+          ],
+          mode: 'all', // Composite permission: must have BOTH report:read AND invoice:read
+        },
+      },
+    ],
+  },
+  {
+    group: 'Organization',
+    key: 'organization',
+    items: [
+      {
+        name: 'Branches & Departments',
+        href: '/organization',
+        icon: Building2,
+        permission: {
+          permissions: [{ resource: 'settings', action: 'manage' }],
+        },
+      },
+      {
+        name: 'Users & Roles',
+        href: '/users',
+        icon: Users,
+        permission: {
+          permissions: [{ resource: 'settings', action: 'manage' }],
+        },
+      },
+      {
+        name: 'Settings',
+        href: '/settings',
+        icon: Settings,
+        permission: {
+          permissions: [{ resource: 'settings', action: 'manage' }],
+        },
+      },
+    ],
+  },
+  {
+    group: 'Administration',
+    key: 'administration',
+    items: [
+      {
+        name: 'Reports',
+        href: '/reports',
+        icon: BarChart3,
+        permission: {
+          permissions: [
+            { resource: 'report', action: 'read' },
+            { resource: 'audit', action: 'read' },
+          ],
+          mode: 'any',
+        },
+      },
+      {
+        name: 'Worker Monitoring',
+        href: '/workers',
+        icon: Activity,
+        permission: {
+          permissions: [{ resource: 'audit', action: 'read' }],
+        },
+      },
+      {
+        name: 'Data Import',
+        href: '/import',
+        icon: Upload,
+        permission: {
+          permissions: [{ resource: 'settings', action: 'manage' }],
+        },
+      },
+    ],
+  },
+  {
+    group: 'Commercial',
+    key: 'commercial',
+    items: [
+      {
+        name: 'Customers',
+        href: '/customers',
+        icon: Users2,
+        permission: {
+          permissions: [{ resource: 'invoice', action: 'read' }],
+        },
+      },
+      {
+        name: 'Contracts & SLA',
+        href: '/contracts',
+        icon: Handshake,
+        permission: {
+          permissions: [{ resource: 'invoice', action: 'read' }],
+        },
+      },
+      {
+        name: 'SLA Policies',
+        href: '/sla/policies',
+        icon: ShieldCheck,
+        permission: {
+          permissions: [{ resource: 'settings', action: 'manage' }],
+        },
+      },
+    ],
+  },
+];
+
+export const contractorNavigationGroups: NavGroup[] = [
   {
     group: 'Overview',
     key: 'overview',
-    items: [{ name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard }],
+    items: [
+      {
+        name: 'Dashboard',
+        href: '/dashboard',
+        icon: LayoutDashboard,
+      },
+    ],
+  },
+  {
+    group: 'Commercial',
+    key: 'commercial',
+    items: [
+      {
+        name: 'Customers',
+        href: '/customers',
+        icon: Users2,
+        permission: {
+          permissions: [{ resource: 'invoice', action: 'read' }],
+        },
+      },
+      {
+        name: 'Contracts & SLA',
+        href: '/contracts',
+        icon: Handshake,
+        permission: {
+          permissions: [{ resource: 'invoice', action: 'read' }],
+        },
+      },
+      {
+        name: 'Invoicing',
+        href: '/finance/invoices',
+        icon: Receipt,
+        permission: {
+          permissions: [{ resource: 'invoice', action: 'read' }],
+        },
+      },
+    ],
   },
   {
     group: 'Operations',
     key: 'operations',
     items: [
-      { name: 'Work Orders', href: '/work-orders', icon: ClipboardList },
-      { name: 'Assets', href: '/dashboard/assets', icon: Wrench },
-      { name: 'Preventive Maintenance', href: '/preventive', icon: CalendarCheck2 },
-    ],
-  },
-  {
-    group: 'Supply',
-    key: 'supply',
-    items: [
-      { name: 'Inventory', href: '/inventory', icon: Boxes },
-      { name: 'Procurement', href: '/procurement', icon: ShoppingCart },
-    ],
-  },
-  {
-    group: 'Business',
-    key: 'business',
-    items: [
-      { name: 'Customers', href: '/customers', icon: Users2 },
-      { name: 'Contracts & SLA', href: '/contracts', icon: Handshake },
-      { name: 'Invoicing', href: '/finance/invoices', icon: Receipt },
+      {
+        name: 'Work Orders',
+        href: '/work-orders',
+        icon: ClipboardList,
+        permission: {
+          permissions: [{ resource: 'work_order', action: 'read' }],
+        },
+      },
+      {
+        name: 'Assets',
+        href: '/dashboard/assets',
+        icon: Wrench,
+        permission: {
+          permissions: [{ resource: 'asset', action: 'read' }],
+        },
+      },
+      {
+        name: 'Preventive Maintenance',
+        href: '/preventive',
+        icon: CalendarCheck2,
+        permission: {
+          permissions: [{ resource: 'work_order', action: 'read' }],
+        },
+      },
     ],
   },
   {
     group: 'Management',
     key: 'management',
     items: [
-      { name: 'Reports', href: '/reports', icon: BarChart3 },
-      { name: 'Organization', href: '/organization', icon: Building2 },
-      { name: 'Users & Roles', href: '/users', icon: Users },
-    ],
-  },
-  {
-    group: 'System',
-    key: 'system',
-    items: [
-      { name: 'Import', href: '/import', icon: Upload },
-      { name: 'Settings', href: '/settings', icon: Settings },
-    ],
-  },
-];
-
-const contractorGroups: NavGroup[] = [
-  {
-    group: 'Overview',
-    key: 'overview',
-    items: [{ name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard }],
-  },
-  {
-    group: 'Business',
-    key: 'business',
-    items: [
-      { name: 'Customers', href: '/customers', icon: Users2 },
-      { name: 'Contracts & SLA', href: '/contracts', icon: Handshake },
-      { name: 'Invoicing', href: '/finance/invoices', icon: Receipt },
-    ],
-  },
-  {
-    group: 'Operations',
-    key: 'operations',
-    items: [
-      { name: 'Work Orders', href: '/work-orders', icon: ClipboardList },
-      { name: 'Assets', href: '/dashboard/assets', icon: Wrench },
-      { name: 'Preventive Maintenance', href: '/preventive', icon: CalendarCheck2 },
-    ],
-  },
-  {
-    group: 'Management',
-    key: 'management',
-    items: [
-      { name: 'Reports', href: '/reports', icon: BarChart3 },
-      { name: 'Organization', href: '/organization', icon: Building2 },
-      { name: 'Users & Roles', href: '/users', icon: Users },
+      {
+        name: 'Reports',
+        href: '/reports',
+        icon: BarChart3,
+        permission: {
+          permissions: [
+            { resource: 'report', action: 'read' },
+            { resource: 'audit', action: 'read' },
+          ],
+          mode: 'any',
+        },
+      },
+      {
+        name: 'Organization',
+        href: '/organization',
+        icon: Building2,
+        permission: {
+          permissions: [{ resource: 'settings', action: 'manage' }],
+        },
+      },
+      {
+        name: 'Users & Roles',
+        href: '/users',
+        icon: Users,
+        permission: {
+          permissions: [{ resource: 'settings', action: 'manage' }],
+        },
+      },
     ],
   },
   {
     group: 'Supply',
     key: 'supply',
     items: [
-      { name: 'Inventory', href: '/inventory', icon: Boxes },
-      { name: 'Procurement', href: '/procurement', icon: ShoppingCart },
+      {
+        name: 'Inventory',
+        href: '/inventory',
+        icon: Boxes,
+        permission: {
+          permissions: [
+            { resource: 'inventory', action: 'read' },
+            { resource: 'stock', action: 'issue' },
+          ],
+          mode: 'any',
+        },
+      },
+      {
+        name: 'Procurement',
+        href: '/procurement',
+        icon: ShoppingCart,
+        // Phase 1E: stock:issue removed — mirrors the main Procurement group correction.
+        permission: {
+          permissions: [{ resource: 'inventory', action: 'read' }],
+        },
+      },
     ],
   },
   {
     group: 'System',
     key: 'system',
     items: [
-      { name: 'Import', href: '/import', icon: Upload },
-      { name: 'Settings', href: '/settings', icon: Settings },
+      {
+        name: 'Import',
+        href: '/import',
+        icon: Upload,
+        permission: {
+          permissions: [{ resource: 'settings', action: 'manage' }],
+        },
+      },
+      {
+        name: 'Settings',
+        href: '/settings',
+        icon: Settings,
+        permission: {
+          permissions: [{ resource: 'settings', action: 'manage' }],
+        },
+      },
     ],
   },
 ];
+
+export const combinedNavigationGroups: NavGroup[] = (() => {
+  const map = new Map<string, NavGroup>();
+  let dashboardSeen = false;
+
+  for (const g of [...facilityNavigationGroups, ...contractorNavigationGroups]) {
+    const filteredItems: NavItem[] = [];
+    for (const item of g.items) {
+      if (item.href === '/dashboard') {
+        if (!dashboardSeen) {
+          dashboardSeen = true;
+          filteredItems.push(item);
+        }
+      } else {
+        filteredItems.push(item);
+      }
+    }
+
+    if (filteredItems.length === 0) continue;
+
+    if (!map.has(g.key)) {
+      map.set(g.key, { ...g, items: filteredItems });
+    } else {
+      const existing = map.get(g.key)!;
+      const existingHrefs = new Set(existing.items.map((i) => i.href));
+      for (const item of filteredItems) {
+        if (!existingHrefs.has(item.href)) {
+          existing.items.push(item);
+          existingHrefs.add(item.href);
+        }
+      }
+    }
+  }
+  return Array.from(map.values());
+})();
 
 /* ------------------------------------------------------------------ */
 /* Component                                                             */
@@ -188,26 +707,82 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
   mobileOpen = false,
   onCloseMobile,
 }) => {
-  const groups = mode === 'contractor' ? contractorGroups : facilityGroups;
+  const baseGroups =
+    mode === 'contractor'
+      ? contractorNavigationGroups
+      : mode === 'combined'
+      ? combinedNavigationGroups
+      : facilityNavigationGroups;
 
-  // Collapsible group state — all expanded by default
-  const initialOpen = Object.fromEntries(groups.map((g) => [g.key, true]));
+  // Filter items in each group by the user's role and permissions
+  const filteredGroups = useMemo(() => {
+    const computed = baseGroups
+      .map((group) => ({
+        ...group,
+        items: group.items.filter((item) => canUserAccessNavItem(user, item)),
+      }))
+      .filter((group) => group.items.length > 0);
+
+    // Fail-safe: ensure user is never left with an empty navigation
+    if (computed.length === 0) {
+      return [
+        {
+          group: 'Operations',
+          key: 'operations',
+          items: [
+            {
+              name: 'Dashboard',
+              href: '/dashboard',
+              icon: LayoutDashboard,
+            },
+          ],
+        },
+      ];
+    }
+    return computed;
+  }, [baseGroups, user]);
+
+  // Collapsible group state — all visible groups expanded by default
+  const initialOpen = useMemo(
+    () => Object.fromEntries(filteredGroups.map((g) => [g.key, true])),
+    [filteredGroups]
+  );
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(initialOpen);
 
-  const initials = user.name
+  const roleName = typeof user.role === 'string' ? user.role : user.role?.name ?? 'ZemiFix';
+  const userName = user.name || 'Staff account';
+
+  const initials = userName
     .split(/\s+/)
     .map((p) => p[0])
     .join('')
     .slice(0, 2)
-    .toUpperCase();
+    .toUpperCase() || 'ZF';
+
+  // Extract all visible hrefs to accurately determine the most specific active route
+  const allVisibleHrefs = useMemo(
+    () => filteredGroups.flatMap((g) => g.items.map((i) => i.href)),
+    [filteredGroups]
+  );
 
   const isActive = (href: string) => {
     if (href === '/dashboard') return currentPath === '/' || currentPath === '/dashboard';
-    return currentPath === href || currentPath.startsWith(`${href}/`);
+    if (currentPath === href) return true;
+    if (currentPath.startsWith(`${href}/`)) {
+      // Ensure we don't highlight a parent link if a more specific sibling route is active
+      const hasMoreSpecific = allVisibleHrefs.some(
+        (other) =>
+          other !== href &&
+          other.length > href.length &&
+          (currentPath === other || currentPath.startsWith(`${other}/`))
+      );
+      return !hasMoreSpecific;
+    }
+    return false;
   };
 
   const toggleGroup = (key: string) => {
-    setOpenGroups((prev) => ({ ...prev, [key]: !prev[key] }));
+    setOpenGroups((prev) => ({ ...prev, [key]: !(prev[key] ?? true) }));
   };
 
   return (
@@ -259,7 +834,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
           aria-label="Main navigation"
           className="min-h-0 flex-1 overflow-y-auto px-2 py-4"
         >
-          {groups.map((group) => {
+          {filteredGroups.map((group) => {
             const isOpen = openGroups[group.key] ?? true;
             const isSingleItem = group.items.length === 1;
 
@@ -333,8 +908,8 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({
             {!collapsed && (
               <>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[12px] font-medium text-white">{user.name}</p>
-                  <p className="truncate text-[10px] text-slate-400">{user.role}</p>
+                  <p className="truncate text-[12px] font-medium text-white">{userName}</p>
+                  <p className="truncate text-[10px] text-slate-400">{roleName}</p>
                 </div>
                 <button
                   type="button"

@@ -1,24 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
+import { withApiSecurity } from '@/src/lib/authWrapper';
 import { transitionWorkOrderStatus } from '@/src/lib/services/workOrderService';
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const { id } = await params;
-    const user = await getCurrentUser(req);
+export const POST = withApiSecurity(
+  { realm: 'STAFF', resource: 'work_order', action: 'update' },
+  async (req, { user, tx, params }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
+    }
+
+    const { id } = params ?? {};
+    if (!id) {
+      return NextResponse.json({ error: 'Work order ID required' }, { status: 400 });
     }
 
     const body = await req.json();
-    const updated = await transitionWorkOrderStatus(user, {
-      workOrderId: id,
-      newStatus: body.newStatus,
-      reason: body.reason,
-    });
+    const updated = await transitionWorkOrderStatus(
+      user,
+      {
+        workOrderId: id,
+        newStatus: body.newStatus,
+        reason: body.reason,
+      },
+      tx
+    );
 
     return NextResponse.json({ success: true, workOrder: updated });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to transition work order status' }, { status: 400 });
   }
-}
+);

@@ -1,25 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
-import { prisma } from '@/src/lib/prisma';
-import { getScopedWorkOrderFilter } from '@/src/lib/services/workOrderService';
+import { withApiSecurity } from '@/src/lib/authWrapper';
+import { createWorkOrderComment } from '@/src/lib/services/workOrderService';
 
-export async function POST(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    let user;
-    try {
-      user = await getCurrentUser(req);
-    } catch {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
+export const POST = withApiSecurity(
+  { realm: 'STAFF', resource: 'work_order', action: 'update' },
+  async (req, { user, tx, params }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
-    const { id } = await params;
+    const { id } = params ?? {};
+    if (!id) {
+      return NextResponse.json({ error: 'Work order ID required' }, { status: 400 });
+    }
 
     const body = await req.json();
     const { body: commentText, isCustomerVisible } = body;
@@ -28,28 +21,16 @@ export async function POST(
       return NextResponse.json({ error: 'Comment body is required' }, { status: 400 });
     }
 
-    // Verify the work order exists and is accessible within the user's scope
-    const scopeFilter = await getScopedWorkOrderFilter(user);
-    const workOrder = await prisma.workOrder.findFirst({
-      where: { id, ...scopeFilter },
-    });
-
-    if (!workOrder) {
-      return NextResponse.json({ error: 'Work order not found' }, { status: 404 });
-    }
-
-    const comment = await prisma.workOrderComment.create({
-      data: {
+    const comment = await createWorkOrderComment(
+      user,
+      {
         workOrderId: id,
-        authorUserId: user.id,
         commentText: commentText.trim(),
         isCustomerVisible: isCustomerVisible ?? false,
       },
-    });
+      tx
+    );
 
     return NextResponse.json({ comment }, { status: 201 });
-  } catch (err: any) {
-    console.error('[API /api/work-orders/[id]/comments POST error]:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
-}
+);

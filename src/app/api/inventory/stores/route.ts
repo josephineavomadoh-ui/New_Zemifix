@@ -1,33 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
+import { withApiSecurity } from '@/src/lib/authWrapper';
 import { createStore, getStores } from '@/src/lib/services/inventoryService';
 
-export async function GET(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
+export const GET = withApiSecurity(
+  { realm: 'STAFF', resource: 'inventory', action: 'read' },
+  async (req, { user, tx }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
-    const stores = await getStores(user);
+    const stores = await getStores(user, tx);
     return NextResponse.json({ stores, count: stores.length });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to fetch stores' }, { status: 500 });
   }
-}
+);
 
-export async function POST(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
+export const POST = withApiSecurity(
+  { realm: 'STAFF', resource: 'inventory', action: 'create' },
+  async (req, { user, tx }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
     const body = await req.json();
-    const store = await createStore(user, body);
+    const store = await createStore(user, body, tx);
 
     return NextResponse.json({ success: true, store }, { status: 201 });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to create warehouse store' }, { status: 400 });
   }
-}
+);

@@ -106,6 +106,10 @@ async function main() {
     // System Settings & Users
     { resource: 'settings', action: 'manage', description: 'Manage branch tree, departments, and roles' },
     { resource: 'audit', action: 'read', description: 'Read tamper-evident audit trails' },
+    // Missing Read Permissions for Administrator Navigation
+    { resource: 'asset', action: 'read', description: 'View asset register and details' },
+    { resource: 'inventory', action: 'read', description: 'View parts, stores and inventory' },
+    { resource: 'report', action: 'read', description: 'View standard and financial reports' },
   ];
 
   for (const p of permissionsList) {

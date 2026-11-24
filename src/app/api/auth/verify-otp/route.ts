@@ -7,8 +7,9 @@ import {
   PREAUTH_COOKIE_NAME,
 } from '@/src/lib/auth';
 import { verifyOtpChallenge, updateLastLoginAt } from '@/src/lib/services/otpService';
-import { prisma } from '@/src/lib/prisma';
+import { withSecurityContext } from '@/src/lib/services/securityContextService';
 import { handleApiError, DatabaseUnavailableError } from '@/src/lib/db-errors';
+import { isDevLike } from '@/src/lib/env';
 
 const verifySchema = z.object({
   code: z.string().min(1, 'Authentication code is required').max(10),
@@ -45,25 +46,38 @@ export async function POST(req: NextRequest) {
     }
 
     // 2. Atomically verify OTP code
-    const outcome = await verifyOtpChallenge(
-      preAuthPayload.otpRecordId,
-      code.trim()
+    const { outcome, user } = await withSecurityContext(
+      {
+        userId: preAuthPayload.userId,
+        accessScope: 'Own',
+        realm: 'STAFF',
+      },
+      async (tx) => {
+        const outcome = await verifyOtpChallenge(
+          preAuthPayload.otpRecordId,
+          code.trim(),
+          tx
+        );
+
+        if (outcome.status !== 'valid') {
+          return { outcome, user: null };
+        }
+
+        await updateLastLoginAt(preAuthPayload.userId, tx);
+        const user = await tx.user.findUnique({
+          where: { id: preAuthPayload.userId },
+          include: {
+            role: true,
+            branch: true,
+            department: true,
+          },
+        });
+
+        return { outcome, user };
+      }
     );
 
     if (outcome.status === 'valid') {
-      // 3. Update lastLoginAt
-      await updateLastLoginAt(preAuthPayload.userId);
-
-      // 4. Retrieve user details for session token and safe user response payload
-      const user = await prisma.user.findUnique({
-        where: { id: preAuthPayload.userId },
-        include: {
-          role: true,
-          branch: true,
-          department: true,
-        },
-      });
-
       if (!user || user.deletedAt !== null || !user.isActive) {
         return NextResponse.json(
           {
@@ -132,6 +146,12 @@ export async function POST(req: NextRequest) {
       // Clear pre-authentication cookie
       response.cookies.delete(PREAUTH_COOKIE_NAME);
 
+      // ---- Development cache cleanup (challenge‑id keyed) ----
+      if (isDevLike()) {
+        const { clearOtp } = await import('@/src/lib/services/devOtpStore');
+        clearOtp(preAuthPayload.otpRecordId);
+      }
+
       return response;
     }
 
@@ -147,6 +167,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (outcome.status === 'expired') {
+      if (isDevLike()) {
+        const { clearOtp } = await import('@/src/lib/services/devOtpStore');
+        clearOtp(preAuthPayload.otpRecordId);
+      }
+
       return NextResponse.json(
         {
           error: 'Code Expired',
@@ -168,7 +193,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Default for already_consumed, invalidated, not_found
     return NextResponse.json(
       {
         error: 'Invalid Code',

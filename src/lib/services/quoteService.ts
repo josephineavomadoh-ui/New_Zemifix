@@ -291,11 +291,48 @@ export async function acceptCustomerQuote(
     });
 
     // 4. Quote-to-Work-Order Transition Execution
-    if (decision === 'ACCEPTED' && quote.workOrderId) {
-      await tx.workOrder.update({
-        where: { id: quote.workOrderId },
-        data: { status: 'APPROVED' },
-      });
+    let workOrderId = quote.workOrderId;
+    if (decision === 'ACCEPTED') {
+      if (workOrderId) {
+        await tx.workOrder.update({
+          where: { id: workOrderId },
+          data: { status: 'APPROVED' },
+        });
+      } else {
+        const quoteLines = await tx.quoteLine.findMany({ where: { quoteId: quote.id } });
+        const woUuid = generateUuidV7();
+        const woNumber = `WO-${new Date().getFullYear()}-${Math.floor(Math.random() * 900000 + 100000)}`;
+        const branch = await tx.branch.findFirst();
+
+        const createdWo = await tx.workOrder.create({
+          data: {
+            id: woUuid,
+            workOrderNumber: woNumber,
+            title: `Job from Quote ${quote.quoteNumber}: ${quote.title}`,
+            description: `Auto-generated work order from accepted customer quotation ${quote.quoteNumber}`,
+            type: 'BILLABLE',
+            priority: 'MEDIUM',
+            status: 'APPROVED',
+            customerId: quote.customerId,
+            siteId: quote.siteId,
+            branchId: branch?.id || '0192e2b0-8a1c-7fc0-84a2-1b1d8f8a2001',
+            estimatedCost: quote.totalAmount,
+            checklists: {
+              create: quoteLines.map((line: any) => ({
+                id: generateUuidV7(),
+                taskName: line.description,
+                isMandatory: true,
+                orderIndex: 0,
+              })),
+            },
+          },
+        });
+        workOrderId = createdWo.id;
+        await tx.quote.update({
+          where: { id: quote.id },
+          data: { workOrderId },
+        });
+      }
     }
 
     await notifyCustomerContact(tx, {

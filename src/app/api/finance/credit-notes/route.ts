@@ -1,34 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
-import { issueCreditNote } from '@/src/lib/services/billingService';
-import { prisma } from '@/src/lib/prisma';
+import { withApiSecurity } from '@/src/lib/authWrapper';
+import { issueCreditNote, getCreditNotes } from '@/src/lib/services/billingService';
 
-export async function GET(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
+export const GET = withApiSecurity(
+  { realm: 'STAFF', resource: 'invoice', action: 'read' },
+  async (req, { user, tx }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
-    const creditNotes = await prisma.creditNote.findMany({
-      include: {
-        customer: { select: { name: true, customerNumber: true } },
-        invoice: { select: { invoiceNumber: true, draftReference: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const creditNotes = await getCreditNotes(user, tx);
 
     return NextResponse.json({ creditNotes, count: creditNotes.length });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to fetch credit notes' }, { status: 500 });
   }
-}
+);
 
-export async function POST(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
+export const POST = withApiSecurity(
+  { realm: 'STAFF', resource: 'invoice', action: 'create' },
+  async (req, { user, tx }) => {
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
     }
 
     const body = await req.json();
@@ -36,10 +27,8 @@ export async function POST(req: NextRequest) {
       invoiceId: body.invoiceId,
       reason: body.reason,
       subtotal: parseFloat(body.subtotal),
-    });
+    }, tx);
 
     return NextResponse.json({ success: true, creditNote }, { status: 201 });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to issue credit note' }, { status: 400 });
   }
-}
+);

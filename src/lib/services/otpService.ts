@@ -73,6 +73,7 @@
  */
 
 import { randomInt } from 'crypto';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
 import { hashOtpCode, verifyOtpHash } from '../auth';
 import { DatabaseUnavailableError, isDatabaseConnectionError } from '../db-errors';
@@ -274,12 +275,13 @@ export async function createOtpChallenge(params: {
 export async function verifyOtpChallenge(
   otpRecordId: string,
   submittedCode: string,
+  tx: Prisma.TransactionClient,
 ): Promise<VerifyOutcome> {
   const now = new Date();
 
   try {
     // --- Step 1: fetch the row for hash comparison (read-only, no lock) ---
-    const row = await prisma.authOtp.findUnique({
+    const row = await tx.authOtp.findUnique({
       where: { id: otpRecordId },
       select: {
         otpCodeHash:   true,
@@ -303,7 +305,7 @@ export async function verifyOtpChallenge(
       // The WHERE clause guards against a concurrent race: if another request
       // consumed or invalidated between our read and this write, 0 rows update
       // and we re-diagnose below.
-      const consumed = await prisma.$queryRaw<Array<{ id: string }>>`
+      const consumed = await tx.$queryRaw<Array<{ id: string }>>`
         UPDATE "auth_otps"
            SET "consumedAt"    = NOW(),
                "attemptCount" = "attemptCount" + 1
@@ -320,10 +322,10 @@ export async function verifyOtpChallenge(
       }
 
       // Race: re-diagnose
-      return diagnoseFailed(otpRecordId, now);
+      return diagnoseFailed(tx, otpRecordId, now);
     } else {
       // --- Step 2b: atomic attempt increment (wrong code) ---
-      const incremented = await prisma.$queryRaw<Array<{ id: string; "attemptCount": number }>>`
+      const incremented = await tx.$queryRaw<Array<{ id: string; "attemptCount": number }>>`
         UPDATE "auth_otps"
            SET "attemptCount" = "attemptCount" + 1
          WHERE id              = ${otpRecordId}::uuid
@@ -335,7 +337,7 @@ export async function verifyOtpChallenge(
       `;
 
       if (incremented.length === 0) {
-        return diagnoseFailed(otpRecordId, now);
+        return diagnoseFailed(tx, otpRecordId, now);
       }
 
       const newCount = incremented[0]['attemptCount'] as number;
@@ -357,10 +359,11 @@ export async function verifyOtpChallenge(
 
 /** Re-fetch a row to determine why an atomic update returned 0 rows. */
 async function diagnoseFailed(
+  tx: Prisma.TransactionClient,
   otpRecordId: string,
   now: Date,
 ): Promise<VerifyOutcome> {
-  const row = await prisma.authOtp.findUnique({
+  const row = await tx.authOtp.findUnique({
     where: { id: otpRecordId },
     select: {
       consumedAt:    true,
@@ -386,12 +389,16 @@ async function diagnoseFailed(
  * Errors are logged but do not block session issuance — a failed lastLoginAt
  * update must not leave the user unable to authenticate.
  */
-export async function updateLastLoginAt(userId: string): Promise<void> {
+export async function updateLastLoginAt(
+  userId: string,
+  tx: Prisma.TransactionClient,
+): Promise<void> {
   try {
-    await prisma.user.update({
-      where: { id: userId },
-      data:  { lastLoginAt: new Date() },
-    });
+    await tx.$executeRaw`
+      UPDATE "users"
+         SET "lastLoginAt" = NOW()
+       WHERE id = ${userId}::uuid
+    `;
   } catch (err: unknown) {
     // Non-fatal: log server-side, do not propagate
     console.error('[otpService] Failed to update lastLoginAt for user', userId, err);

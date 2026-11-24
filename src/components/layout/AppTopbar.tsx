@@ -3,7 +3,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
-  Bell,
   ChevronDown,
   ChevronRight,
   LogOut,
@@ -12,6 +11,7 @@ import {
   Settings,
   User,
 } from 'lucide-react';
+import { NotificationHub } from '../notifications/NotificationHub';
 
 export interface AppTopbarBreadcrumb {
   label: string;
@@ -64,8 +64,6 @@ export const AppTopbar: React.FC<AppTopbarProps> = ({
     .join('')
     .slice(0, 2)
     .toUpperCase();
-
-  const badgeCount = notificationCount > 99 ? '99+' : notificationCount > 0 ? String(notificationCount) : null;
 
   return (
     <header className="sticky top-0 z-30 flex h-[60px] w-full items-center justify-between gap-3 border-b border-[#E2E8F0] bg-white px-4 md:px-6">
@@ -120,19 +118,8 @@ export const AppTopbar: React.FC<AppTopbarProps> = ({
           <Search className="h-4 w-4" />
         </button>
 
-        {/* Notifications bell */}
-        <button
-          type="button"
-          aria-label={`Notifications${badgeCount ? ` (${badgeCount} unread)` : ''}`}
-          className="relative flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 text-slate-500 transition hover:bg-slate-50 hover:text-[#080E29]"
-        >
-          <Bell className="h-4 w-4" />
-          {badgeCount && (
-            <span className="absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[#FF5B00] px-1 text-[10px] font-bold text-white leading-none">
-              {badgeCount}
-            </span>
-          )}
-        </button>
+        {/* Notifications hub */}
+        <NotificationHub realm="staff" />
 
         {/* User avatar + dropdown */}
         <div ref={profileRef} className="relative">

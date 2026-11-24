@@ -1,46 +1,46 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
+import { withApiSecurity } from '@/src/lib/authWrapper';
 import { getRfqById, addVendorQuotation, evaluateVendorQuotations } from '@/src/lib/services/procurementService';
 
-export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const user = await getCurrentUser(req);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+export const GET = withApiSecurity(
+  { realm: 'STAFF', resource: 'procurement', action: 'read' },
+  async (req, { user, tx, params }) => {
+    if (!user) return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
 
-    const { id } = await params;
-    const rfq = await getRfqById(user, id);
+    const { id } = params ?? {};
+    if (!id) return NextResponse.json({ error: 'RFQ ID required' }, { status: 400 });
+
+    const rfq = await getRfqById(user, id, tx);
     return NextResponse.json({ rfq });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to fetch RFQ' }, { status: 404 });
   }
-}
+);
 
-export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const user = await getCurrentUser(req);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+export const POST = withApiSecurity(
+  { realm: 'STAFF', resource: 'procurement', action: 'update' },
+  async (req, { user, tx, params }) => {
+    if (!user) return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
 
-    const { id } = await params;
+    const { id } = params ?? {};
+    if (!id) return NextResponse.json({ error: 'RFQ ID required' }, { status: 400 });
+
     const body = await req.json();
 
-    const quotation = await addVendorQuotation(user, { ...body, rfqId: id });
+    const quotation = await addVendorQuotation(user, { ...body, rfqId: id }, tx);
     return NextResponse.json({ success: true, quotation }, { status: 201 });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to record vendor quotation' }, { status: 400 });
   }
-}
+);
 
-export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const user = await getCurrentUser(req);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+export const PATCH = withApiSecurity(
+  { realm: 'STAFF', resource: 'procurement', action: 'approve' },
+  async (req, { user, tx, params }) => {
+    if (!user) return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
 
-    const { id } = await params;
+    const { id } = params ?? {};
+    if (!id) return NextResponse.json({ error: 'RFQ ID required' }, { status: 400 });
+
     const body = await req.json();
 
-    const evaluatedRfq = await evaluateVendorQuotations(user, { ...body, rfqId: id });
+    const evaluatedRfq = await evaluateVendorQuotations(user, { ...body, rfqId: id }, tx);
     return NextResponse.json({ success: true, rfq: evaluatedRfq });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to evaluate RFQ' }, { status: 400 });
   }
-}
+);

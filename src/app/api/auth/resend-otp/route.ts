@@ -149,7 +149,8 @@ export async function POST(req: NextRequest) {
     const deliveryResult = await dispatchOtp(
       destination,
       channel,
-      resendChallenge.plainCode
+      resendChallenge.plainCode,
+      'LOGIN_MFA'
     );
 
     if (!deliveryResult.ok) {

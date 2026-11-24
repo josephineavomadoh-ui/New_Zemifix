@@ -1,29 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/src/lib/auth';
+import { withApiSecurity } from '@/src/lib/authWrapper';
 import { createGoodsReceivedNote, getGoodsReceivedNotes } from '@/src/lib/services/procurementService';
 
-export async function GET(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+export const GET = withApiSecurity(
+  { realm: 'STAFF', resource: 'procurement', action: 'read' },
+  async (req, { user, tx }) => {
+    if (!user) return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
 
-    const grns = await getGoodsReceivedNotes(user);
+    const grns = await getGoodsReceivedNotes(user, tx);
     return NextResponse.json({ grns, count: grns.length });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to fetch Goods Received Notes' }, { status: 500 });
   }
-}
+);
 
-export async function POST(req: NextRequest) {
-  try {
-    const user = await getCurrentUser(req);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+export const POST = withApiSecurity(
+  { realm: 'STAFF', resource: 'procurement', action: 'create' },
+  async (req, { user, tx }) => {
+    if (!user) return NextResponse.json({ error: 'UNAUTHORIZED: Active staff session required' }, { status: 401 });
 
     const body = await req.json();
-    const result = await createGoodsReceivedNote(user, body);
+    const result = await createGoodsReceivedNote(user, body, tx);
 
     return NextResponse.json({ success: true, result }, { status: 201 });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? 'Failed to create Goods Received Note' }, { status: 400 });
   }
-}
+);

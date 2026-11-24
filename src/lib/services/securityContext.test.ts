@@ -3,7 +3,6 @@ import { PrismaClient } from '@prisma/client';
 import {
   withSecurityContext,
   getTransactionSecurityContext,
-  setTransactionSecurityContext,
 } from './securityContextService';
 
 const accDbUrl = 'postgresql://postgres:javvy@localhost:5432/zemifix_acceptance?schema=public';
@@ -52,7 +51,7 @@ describe('PostgreSQL Runtime Role Separation & Transaction-Scoped Security Conte
       branchId: '01a1baaa-888d-7bd6-9f85-c15f0bb05f01',
       branchPath: '/HQ-ACC/',
       departmentId: '01a1baaa-888d-7bd6-9f85-c15f0bb05f02',
-      accessScope: 'BranchAndBelow',
+      accessScope: 'BranchAndBelow' as const,
       realm: 'STAFF' as const,
     };
 
@@ -77,13 +76,13 @@ describe('PostgreSQL Runtime Role Separation & Transaction-Scoped Security Conte
   it('prevents context leakage across consecutive transactions on same connection', async () => {
     const user1Context = {
       userId: '11111111-1111-1111-1111-111111111111',
-      accessScope: 'Branch',
+      accessScope: 'Branch' as const,
       realm: 'STAFF' as const,
     };
 
     const user2Context = {
       userId: '22222222-2222-2222-2222-222222222222',
-      accessScope: 'Department',
+      accessScope: 'Department' as const,
       realm: 'STAFF' as const,
     };
 
@@ -104,14 +103,14 @@ describe('PostgreSQL Runtime Role Separation & Transaction-Scoped Security Conte
 
   it('fails closed when security context is missing or invalid', async () => {
     await expect(
-      setTransactionSecurityContext(prismaAppUser, {} as any)
+      withSecurityContext(prismaAppUser, {}, async () => undefined)
     ).rejects.toThrowError(/SECURITY_CONTEXT_MISSING/);
   });
 
   it('explicitly distinguishes STAFF, CUSTOMER, and WORKER realms in context', async () => {
     const workerContext = {
       realm: 'WORKER' as const,
-      accessScope: 'Company',
+      accessScope: 'Company' as const,
     };
 
     let ctx: any = null;

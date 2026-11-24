@@ -1,9 +1,15 @@
 import { SignJWT, jwtVerify } from 'jose';
 import bcrypt from 'bcryptjs';
+import { cache } from 'react';
 import { createHmac, timingSafeEqual } from 'crypto';
+import { hmacSha256, safeEqual } from '@/src/lib/server/authCrypto';
 import type { NextRequest } from 'next/server';
 import { prisma } from './prisma';
 import { cookies } from 'next/headers';
+import {
+  withSecurityContext,
+  type SecurityAccessScope,
+} from './services/securityContextService';
 import {
   AuthenticationError,
   ForbiddenError,
@@ -24,7 +30,7 @@ function getJwtSecret(): Uint8Array {
         'Set a strong random secret in your environment before starting the server.'
     );
   }
-  return new TextEncoder().encode(raw);
+  return new Uint8Array(Buffer.from(raw));
 }
 
 // ---------------------------------------------------------------------------
@@ -357,7 +363,24 @@ export const demoAdminUser = {
     name: 'Admin',
     isSystem: true,
     description: 'Full system control',
-    permissions: [],
+    permissions: [
+      { permission: { resource: 'work_order', action: 'create' } },
+      { permission: { resource: 'work_order', action: 'read' } },
+      { permission: { resource: 'work_order', action: 'update' } },
+      { permission: { resource: 'work_order', action: 'approve' } },
+      { permission: { resource: 'work_order', action: 'verify' } },
+      { permission: { resource: 'work_order', action: 'close' } },
+      { permission: { resource: 'invoice', action: 'create' } },
+      { permission: { resource: 'invoice', action: 'read' } },
+      { permission: { resource: 'invoice', action: 'approve' } },
+      { permission: { resource: 'stock', action: 'issue' } },
+      { permission: { resource: 'stock', action: 'approve_issue' } },
+      { permission: { resource: 'settings', action: 'manage' } },
+      { permission: { resource: 'audit', action: 'read' } },
+      { permission: { resource: 'asset', action: 'read' } },
+      { permission: { resource: 'inventory', action: 'read' } },
+      { permission: { resource: 'report', action: 'read' } },
+    ],
   },
   branchId: '0192e2b0-8a1c-7fc0-84a2-1b1d8f8a2001',
   branch: {
@@ -403,6 +426,7 @@ export interface AuthenticatedUser {
     name: string;
     code: string;
     type: string;
+    path?: string;
   };
   departmentId?: string | null;
   department?: {
@@ -506,57 +530,51 @@ export async function verifySessionToken(token: string): Promise<SessionPayload 
  *                Requires a configured database. Retrieves the live user from PostgreSQL.
  *                Never returns demoAdminUser regardless of userId.
  */
-export async function getCurrentUser(req?: NextRequest): Promise<AuthenticatedUser | null> {
+const fetchUserFromToken = cache(async (token: string): Promise<AuthenticatedUser | null> => {
+  const payload = await verifySessionToken(token);
+  if (!payload?.userId) return null;
+
+  const { isDatabaseConfigured } = await import('./db-errors');
+
+  // -----------------------------------------------------------------------
+  // DEMO SESSION PATH
+  // -----------------------------------------------------------------------
+  if (payload.isDemoSession === true) {
+    // Reject demo tokens in production under any circumstances
+    if (process.env.NODE_ENV === 'production') return null;
+
+    // Reject demo tokens when a real database is configured
+    if (isDatabaseConfigured()) return null;
+
+    // Reject demo tokens when demo mode is not explicitly enabled
+    if (!isDemoModeEnabled()) return null;
+
+    // Reject tokens whose userId doesn't match the single known demo identity
+    if (payload.userId !== demoAdminUser.id) return null;
+
+    return demoAdminUser as unknown as AuthenticatedUser;
+  }
+
+  // -----------------------------------------------------------------------
+  // REAL STAFF SESSION PATH
+  // -----------------------------------------------------------------------
+
+  // A real staff token requires a configured database — refuse without one
+  if (!isDatabaseConfigured()) return null;
+
+  // Never allow a real token to resolve to the demo identity
+  if (payload.userId === demoAdminUser.id) return null;
+
   try {
-    let token: string | undefined;
-    if (req) {
-      token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
-    } else {
-      try {
-        const cookieStore = await cookies();
-        token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
-      } catch {
-        token = undefined;
-      }
-    }
-    if (!token) return null;
-
-    const payload = await verifySessionToken(token);
-    if (!payload?.userId) return null;
-
-    const { isDatabaseConfigured } = await import('./db-errors');
-
-    // -----------------------------------------------------------------------
-    // DEMO SESSION PATH
-    // -----------------------------------------------------------------------
-    if (payload.isDemoSession === true) {
-      // Reject demo tokens in production under any circumstances
-      if (process.env.NODE_ENV === 'production') return null;
-
-      // Reject demo tokens when a real database is configured
-      if (isDatabaseConfigured()) return null;
-
-      // Reject demo tokens when demo mode is not explicitly enabled
-      if (!isDemoModeEnabled()) return null;
-
-      // Reject tokens whose userId doesn't match the single known demo identity
-      if (payload.userId !== demoAdminUser.id) return null;
-
-      return demoAdminUser as unknown as AuthenticatedUser;
-    }
-
-    // -----------------------------------------------------------------------
-    // REAL STAFF SESSION PATH
-    // -----------------------------------------------------------------------
-
-    // A real staff token requires a configured database — refuse without one
-    if (!isDatabaseConfigured()) return null;
-
-    // Never allow a real token to resolve to the demo identity
-    if (payload.userId === demoAdminUser.id) return null;
-
-    try {
-      const user = await prisma.user.findUnique({
+    const user = await withSecurityContext(
+      {
+        userId: payload.userId,
+        branchId: payload.branchId,
+        departmentId: payload.departmentId,
+        accessScope: payload.accessScope as SecurityAccessScope,
+        realm: 'STAFF',
+      },
+      (tx) => tx.user.findUnique({
         where: { id: payload.userId },
         include: {
           role: {
@@ -574,6 +592,7 @@ export async function getCurrentUser(req?: NextRequest): Promise<AuthenticatedUs
               name: true,
               code: true,
               type: true,
+              path: true,
             },
           },
           department: {
@@ -584,23 +603,42 @@ export async function getCurrentUser(req?: NextRequest): Promise<AuthenticatedUs
             },
           },
         },
-      });
+      })
+    );
 
-      // Immediate session invalidation if account is deactivated or marked deleted
-      if (!user || !user.isActive || user.deletedAt) {
-        return null;
-      }
-
-      // Safe return: passwordHash is not included in selection/mapping
-      const { passwordHash: _, ...safeUser } = user;
-      return safeUser as unknown as AuthenticatedUser;
-    } catch (dbErr: unknown) {
-      if (isDatabaseConnectionError(dbErr)) {
-        // A configured-but-unreachable database must NEVER fall back to demo data
-        throw new DatabaseUnavailableError();
-      }
-      throw dbErr;
+    // Immediate session invalidation if account is deactivated or marked deleted
+    if (!user || !user.isActive || user.deletedAt) {
+      return null;
     }
+
+    // Safe return: passwordHash is not included in selection/mapping
+    const { passwordHash: _, ...safeUser } = user;
+    return safeUser as unknown as AuthenticatedUser;
+  } catch (dbErr: unknown) {
+    if (isDatabaseConnectionError(dbErr)) {
+      // A configured-but-unreachable database must NEVER fall back to demo data
+      throw new DatabaseUnavailableError();
+    }
+    throw dbErr;
+  }
+});
+
+export async function getCurrentUser(req?: NextRequest): Promise<AuthenticatedUser | null> {
+  try {
+    let token: string | undefined;
+    if (req) {
+      token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+    } else {
+      try {
+        const cookieStore = await cookies();
+        token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
+      } catch {
+        token = undefined;
+      }
+    }
+    if (!token) return null;
+
+    return await fetchUserFromToken(token);
   } catch (error) {
     if (error instanceof DatabaseUnavailableError) {
       throw error;
